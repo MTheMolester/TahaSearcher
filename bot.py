@@ -424,7 +424,7 @@ def handle_message(msg):
         
         try:
             if not GEMINI_API_KEY:
-                raise Exception("GEMINI_API_KEY is not set.")
+                raise Exception("GEMINI_API_KEY is not set in Render environment variables.")
                 
             if "gemini_models" not in s:
                 s["gemini_models"] = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -437,10 +437,22 @@ def handle_message(msg):
             
             for model_name in list(s["gemini_models"]):
                 try:
-                    temp_model = genai.GenerativeModel(model_name)
+                    # FIX: Inject strict system instruction so it NEVER leaks thinking steps
+                    temp_model = genai.GenerativeModel(
+                        model_name,
+                        system_instruction="You are a helpful assistant. NEVER output your internal thinking, reasoning, scratchpad, or drafting steps. Provide ONLY the final, polished response directly to the user."
+                    )
+                    
                     response = temp_model.generate_content(text)
                     ai_response = response.text
-                    break
+                    
+                    # FIX: Physical text filter to chop off any remaining hallucinatory reasoning tags
+                    if "*پاسخ:" in ai_response:
+                        ai_response = ai_response.split("*پاسخ:")[-1].strip()
+                    elif "پاسخ:" in ai_response:
+                        ai_response = ai_response.split("پاسخ:")[-1].strip()
+                        
+                    break # SUCCESS! Exit the loop immediately.
                 except Exception as e:
                     logging.warning(f"Model {model_name} failed: {e}")
                     if model_name in s["gemini_models"]:
