@@ -7,10 +7,14 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 
+# Import the web search library
 try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
+
+# Import the NEW AI chat library
+from duckai import DuckAI
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -404,7 +408,7 @@ def handle_message(msg):
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
-    # ── AI Engine Logic ──
+    # ── AI Engine Logic (UPDATED) ──
     if state == "WAITING_AI_PROMPT":
         loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال فکر کردن است...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
@@ -412,9 +416,8 @@ def handle_message(msg):
         log_history(user_id, "ai", "chat", text[:50] + "...")
         
         try:
-            with DDGS() as ddgs:
-                # Calls the free GPT-4o-mini endpoint from DuckDuckGo
-                ai_response = ddgs.chat(text, model="gpt-4o-mini")
+            # We now use DuckAI instead of DDGS to fetch the AI response
+            ai_response = DuckAI().chat(text, model="gpt-4o-mini")
         except Exception as e:
             logging.error(f"AI Error: {e}")
             ai_response = "❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد. لطفاً دوباره تلاش کنید."
