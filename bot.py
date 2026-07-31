@@ -436,13 +436,19 @@ def handle_message(msg):
             
             for model_name in list(s["gemini_models"]):
                 try:
+                    # Initialize completely clean without weak system parameters
                     temp_model = genai.GenerativeModel(model_name)
                     
-                    # FIX: Hard-injected strict prompt wrapping to completely disable internal thinking
+                    # FIX: Brutal, un-bypassable prompt injection to absolutely kill internal scratching
                     strict_prompt = (
-                        "INSTRUCTION: You are a helpful assistant. YOU MUST NEVER output your internal thinking, reasoning, or drafting steps. "
-                        "Do not include any English brainstorming or scratchpad text. Output ONLY the final, polished response.\n\n"
-                        f"USER QUERY: {text}"
+                        "You are a direct-answering assistant. You must bypass all internal reasoning.\n"
+                        "CRITICAL RULES:\n"
+                        "1. NO internal monologue, NO thinking steps, NO scratchpad.\n"
+                        "2. DO NOT output 'User query:', 'Intent:', or 'Disclaimer:'.\n"
+                        "3. DO NOT output any English bullet points prior to your answer.\n"
+                        "4. Match the user's language exactly.\n\n"
+                        f"USER QUERY: {text}\n"
+                        "FINAL BOT RESPONSE:\n"
                     )
                     
                     response = temp_model.generate_content(strict_prompt)
