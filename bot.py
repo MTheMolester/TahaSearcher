@@ -3,7 +3,7 @@ import io
 import json
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 
@@ -29,7 +29,7 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "@YourAdminID")
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") # New Gemini Key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
@@ -38,8 +38,8 @@ SESSIONS = {}
 # Configure Gemini AI
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Using the fast and efficient gemini-1.5-flash model
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    # Switched to the universal 'gemini-pro' alias to prevent 404 region/key errors
+    ai_model = genai.GenerativeModel('gemini-pro')
 
 # ── Database & CRM Logic ──────────────────────────────────────────────
 def db_cmd(*args):
@@ -76,7 +76,10 @@ def get_user_info(user_id):
     return {"name": str(user_id), "username": ""}
 
 def log_history(user_id, engine, category, query):
-    ir_time = (datetime.utcnow() + timedelta(hours=3, minutes=30)).strftime("%Y-%m-%d %H:%M")
+    # Updated to timezone-aware objects to fix the deprecation warning in the logs
+    ir_tz = timezone(timedelta(hours=3, minutes=30))
+    ir_time = datetime.now(ir_tz).strftime("%Y-%m-%d %H:%M")
+    
     entry = {"engine": engine, "category": category, "query": query, "time": ir_time}
     db_cmd("LPUSH", f"shist:{user_id}", json.dumps(entry, ensure_ascii=False))
     db_cmd("LTRIM", f"shist:{user_id}", "0", "19") 
@@ -263,7 +266,7 @@ def send_ai_menu(chat_id, message_id):
         [btn("💬 چت با هوش مصنوعی (Gemini)", "ai:chat")],
         [btn("🔙 بازگشت به منوی اصلی", "main:back")]
     ]
-    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nپاسخگویی سریع و دقیق به سوالات شما با استفاده از Google Gemini 1.5!"
+    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nپاسخگویی سریع و دقیق به سوالات شما با استفاده از Google Gemini!"
     edit_message(chat_id, message_id, text, kb)
 
 def send_category_menu(chat_id, message_id, engine_name):
@@ -423,7 +426,7 @@ def handle_message(msg):
         
         try:
             if not GEMINI_API_KEY:
-                raise Exception("GEMINI_API_KEY is not set.")
+                raise Exception("GEMINI_API_KEY is not set in Render environment variables.")
             response = ai_model.generate_content(text)
             ai_response = response.text
         except Exception as e:
