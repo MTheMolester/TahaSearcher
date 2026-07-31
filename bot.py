@@ -107,7 +107,6 @@ def send_document(chat_id, file_stream, filename, caption="", keyboard=None):
         payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
         if keyboard: payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
         
-        # Changed "file" to "document" so Bale API accepts the file upload!
         files = {"document": (filename, file_stream, "text/plain")}
         
         r = requests.post(f"{BALE_API}/sendDocument", data=payload, files=files, verify=False, timeout=25)
@@ -135,14 +134,12 @@ def extract_article_text(url):
         
         soup = BeautifulSoup(r.content, "html.parser")
         
-        # Remove noisy elements
         for elem in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
             elem.extract()
             
         title = soup.title.string.strip() if soup.title else "Article"
         
         content = []
-        # Target headers, paragraphs, and list items for clean formatting
         for tag in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
             text = tag.get_text(separator=" ", strip=True)
             if text:
@@ -204,7 +201,6 @@ def fetch_search_results(query, engine="default", category="web"):
 
     try:
         with DDGS() as ddgs:
-            # SAFESEARCH EXPLICITLY TURNED OFF
             if category == "web": 
                 res = list(ddgs.text(query, safesearch="off", max_results=30))
                 if res: return res
@@ -229,26 +225,43 @@ def fetch_search_results(query, engine="default", category="web"):
 
     return []
 
-# ── 🎨 Menus & UI Renderers ────────────────────────────────────────────────
+# ── 🎨 Menus & UI Renderers (UPDATED WITH AI HUB) ──────────────────────────
 def send_main_menu(chat_id, user_id, message_id=None):
     SESSIONS[chat_id] = {"state": "IDLE"}
-    g_lock = "✅" if is_google_approved(user_id) else "🔒"
+    kb = [
+        [btn("🔍 جستجوگر وب (Web Search)", "main:search_menu")],
+        [btn("🤖 هوش مصنوعی (AI Engine)", "main:ai_menu")],
+        [btn("❓ راهنما (Help)", "menu:help")]
+    ]
+    text = "👋 **به ربات جامع TahaSearcher خوش آمدید!**\n\nلطفاً سرویس مورد نظر خود را انتخاب کنید:"
     
+    if message_id: edit_message(chat_id, message_id, text, kb)
+    else: send_message(chat_id, text, kb)
+
+def send_search_menu(chat_id, user_id, message_id):
+    g_lock = "✅" if is_google_approved(user_id) else "🔒"
     kb = [
         [btn("🌐 موتور پیش‌فرض (Default Engine)", "menu:engine:default")],
         [btn(f"🎯 موتور اختصاصی گوگل ({g_lock} Google)", "menu:engine:google")],
-        [btn("❓ راهنما (Help)", "menu:help")]
+        [btn("🔙 بازگشت به منوی اصلی", "main:back")]
     ]
-    text = "👋 **به ربات TahaSearcher خوش آمدید!**\n\nلطفاً موتور جستجوی مورد نظر خود را انتخاب کنید:"
-    if message_id: edit_message(chat_id, message_id, text, kb)
-    else: send_message(chat_id, text, kb)
+    text = "🔍 **بخش جستجوگر وب**\n\nلطفاً موتور جستجوی مورد نظر خود را انتخاب کنید:"
+    edit_message(chat_id, message_id, text, kb)
+
+def send_ai_menu(chat_id, message_id):
+    kb = [
+        [btn("💬 چت با هوش مصنوعی", "ai:chat")],
+        [btn("🔙 بازگشت به منوی اصلی", "main:back")]
+    ]
+    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nموتور هوش مصنوعی به زودی در اینجا متصل می‌شود!"
+    edit_message(chat_id, message_id, text, kb)
 
 def send_category_menu(chat_id, message_id, engine_name):
     kb = [
         [btn("📄 وب (Web)", "menu:cat:web")],
         [btn("🖼 تصاویر (Images)", "menu:cat:images")],
         [btn("📰 اخبار (News)", "menu:cat:news")],
-        [btn("🔙 بازگشت به منوی اصلی", "main:back")]
+        [btn("🔙 بازگشت به منوی جستجو", "main:search_menu")]
     ]
     text = f"⚙️ **موتور انتخاب شده:** `{engine_name.upper()}`\n\nلطفاً دسته‌بندی جستجو را انتخاب کنید:"
     edit_message(chat_id, message_id, text, kb)
@@ -259,7 +272,7 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     
     if not results: 
         text = "❌ متاسفانه هیچ نتیجه‌ای پیدا نشد."
-        kb = [[btn("🔙 بازگشت", "main:back")]]
+        kb = [[btn("🔙 بازگشت", "main:search_menu")]]
         if message_id: return edit_message(chat_id, message_id, text, kb)
         else: return send_message(chat_id, text, kb)
 
@@ -274,10 +287,7 @@ def render_web_search(chat_id, message_id=None, page_num=1):
         num_emoji = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣'][i]
         lines.extend([f"{num_emoji} **{title}**", f"📝 {snippet}\n"])
         
-        # Calculate the absolute index for the callback memory
         global_idx = (page_num - 1) * 5 + i
-        
-        # Build the two interactive rows
         row_urls.append(url_btn(f"{num_emoji} 🔗", link))
         row_dls.append(btn(f"{num_emoji} 📥", f"dltext:{global_idx}"))
         
@@ -286,7 +296,7 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     if (page_num * 5) < len(results): nav_row.append(btn("⬅️ بعدی", f"wpage:next:{page_num+1}"))
     if page_num > 1: nav_row.append(btn("➡️ قبلی", f"wpage:prev:{page_num-1}"))
     if nav_row: kb.append(nav_row)
-    kb.append([btn("🔙 بازگشت به منوی اصلی", "main:back")])
+    kb.append([btn("🔙 بازگشت به منوی جستجو", "main:search_menu")])
     
     if message_id: edit_message(chat_id, message_id, "\n".join(lines), kb)
     else: send_message(chat_id, "\n".join(lines), kb)
@@ -297,7 +307,7 @@ def render_news_search(chat_id, message_id=None, page_num=1):
     
     if not results: 
         text = "❌ هیچ خبری پیدا نشد."
-        kb = [[btn("🔙 بازگشت", "main:back")]]
+        kb = [[btn("🔙 بازگشت", "main:search_menu")]]
         if message_id: return edit_message(chat_id, message_id, text, kb)
         else: return send_message(chat_id, text, kb)
 
@@ -321,7 +331,7 @@ def render_news_search(chat_id, message_id=None, page_num=1):
     if (page_num * 5) < len(results): nav_row.append(btn("⬅️ بعدی", f"npage:next:{page_num+1}"))
     if page_num > 1: nav_row.append(btn("➡️ قبلی", f"npage:prev:{page_num-1}"))
     if nav_row: kb.append(nav_row)
-    kb.append([btn("🔙 بازگشت به منوی اصلی", "main:back")])
+    kb.append([btn("🔙 بازگشت به منوی جستجو", "main:search_menu")])
     
     if message_id: edit_message(chat_id, message_id, "\n".join(lines), kb)
     else: send_message(chat_id, "\n".join(lines), kb)
@@ -332,7 +342,7 @@ def render_image_carousel(chat_id, message_id=None, index=0):
     
     if not results: 
         if message_id: delete_message(chat_id, message_id)
-        return send_message(chat_id, "❌ هیچ تصویری پیدا نشد.", [[btn("🔙 بازگشت به منو", "main:back")]])
+        return send_message(chat_id, "❌ هیچ تصویری پیدا نشد.", [[btn("🔙 بازگشت", "main:search_menu")]])
 
     item = results[index]
     img_url, title, source = item.get("image", item.get("url", "")), item.get("title", "تصویر")[:100], item.get("source", "نامشخص")
@@ -341,7 +351,7 @@ def render_image_carousel(chat_id, message_id=None, index=0):
     nav_row = []
     if index < len(results) - 1: nav_row.append(btn("⬅️ بعدی", f"ipage:next:{index+1}"))
     if index > 0: nav_row.append(btn("➡️ قبلی", f"ipage:prev:{index-1}"))
-    kb = [nav_row, [btn("🔙 بازگشت به منوی اصلی", "main:back")]]
+    kb = [nav_row, [btn("🔙 بازگشت به نتایج جستجو", "main:search_menu")]]
     
     if message_id: delete_message(chat_id, message_id)
     send_photo(chat_id, img_url, caption, kb)
@@ -435,14 +445,18 @@ def handle_callback(cq):
     s = SESSIONS.setdefault(chat_id, {})
     kind, _, value = data.partition(":")
 
-    if kind == "main" and value == "back":
-        return send_main_menu(chat_id, user_id, message_id)
+    if kind == "main":
+        if value == "back":
+            return send_main_menu(chat_id, user_id, message_id)
+        elif value == "search_menu":
+            return send_search_menu(chat_id, user_id, message_id)
+        elif value == "ai_menu":
+            return send_ai_menu(chat_id, message_id)
 
     elif kind == "req_google":
         send_message(ADMIN_ID, f"📩 **درخواست جدید برای گوگل!**\n👤 کاربر: `{user_id}`")
         return edit_message(chat_id, message_id, "⏳ **درخواست شما ارسال شد.**")
 
-    # ── Text Downloader Trigger ──
     elif kind == "dltext":
         idx = int(value)
         results = s.get("results", [])
@@ -467,11 +481,13 @@ def handle_callback(cq):
         
         ok = send_document(chat_id, file_stream, filename, f"📥 **متن استخراج شده مقاله:**\n{doc_title}")
         
-        # Delete loading message ONLY after trying to send
         if load_msg_id: delete_message(chat_id, load_msg_id)
-        
-        if not ok:
-            send_message(chat_id, "❌ خطایی در ارسال فایل متنی به پیام‌رسان بله رخ داد.")
+        if not ok: send_message(chat_id, "❌ خطایی در ارسال فایل متنی به پیام‌رسان بله رخ داد.")
+
+    elif kind == "ai":
+        if value == "chat":
+            answer_callback(cq["id"], "⏳ در حال آماده‌سازی زیرساخت هوش مصنوعی...", show_alert=True)
+            return
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
@@ -482,7 +498,7 @@ def handle_callback(cq):
             
         elif sub_type == "engine":
             if sub_val == "google" and not is_google_approved(user_id):
-                kb = [[btn("📩 ارسال درخواست مجوز", "req_google")], [btn("🔙 بازگشت", "main:back")]]
+                kb = [[btn("📩 ارسال درخواست مجوز", "req_google")], [btn("🔙 بازگشت", "main:search_menu")]]
                 return edit_message(chat_id, message_id, "🔒 **این بخش نیاز به تایید مدیر دارد.**", kb)
             
             s["engine"] = sub_val
