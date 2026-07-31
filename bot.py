@@ -106,8 +106,13 @@ def send_document(chat_id, file_stream, filename, caption="", keyboard=None):
     try:
         payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
         if keyboard: payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
-        files = {"file": (filename, file_stream, "text/plain")}
-        r = requests.post(f"{BALE_API}/sendDocument", data=payload, files=files, verify=False, timeout=20)
+        
+        # Changed "file" to "document" so Bale API accepts the file upload!
+        files = {"document": (filename, file_stream, "text/plain")}
+        
+        r = requests.post(f"{BALE_API}/sendDocument", data=payload, files=files, verify=False, timeout=25)
+        if not r.ok:
+            logging.error(f"Bale sendDocument error: {r.status_code} - {r.text}")
         return r.ok
     except Exception as e:
         logging.error(f"File Upload Error: {e}")
@@ -444,23 +449,28 @@ def handle_callback(cq):
         
         target_url = results[idx].get("href", results[idx].get("url", ""))
         
-        # Send a separate temporary loading message to not overwrite the search results UI
         loading_msg = send_message(chat_id, "⏳ در حال استخراج و ساخت فایل متنی...")
         load_msg_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
         text_content, doc_title = extract_article_text(target_url)
-        if load_msg_id: delete_message(chat_id, load_msg_id)
         
         if not text_content:
+            if load_msg_id: delete_message(chat_id, load_msg_id)
             return send_message(chat_id, "❌ متاسفانه سیستم امنیتی این سایت، اجازه استخراج متن را نمی‌دهد یا محتوای متنی ندارد.")
             
-        # Clean title to prevent invalid filename characters
         safe_title = "".join(c for c in doc_title if c.isalnum() or c in " _-").strip() or "Article"
         filename = f"{safe_title[:40]}.txt"
         
-        # Load content directly into RAM
         file_stream = io.BytesIO(text_content.encode('utf-8'))
-        send_document(chat_id, file_stream, filename, f"📥 **متن استخراج شده مقاله:**\n{doc_title}")
+        file_stream.seek(0)
+        
+        ok = send_document(chat_id, file_stream, filename, f"📥 **متن استخراج شده مقاله:**\n{doc_title}")
+        
+        # Delete loading message ONLY after trying to send
+        if load_msg_id: delete_message(chat_id, load_msg_id)
+        
+        if not ok:
+            send_message(chat_id, "❌ خطایی در ارسال فایل متنی به پیام‌رسان بله رخ داد.")
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
