@@ -31,13 +31,52 @@ BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 SESSIONS = {}
 
-# ── Database & CRM Logic ──────────────────────────────────────────────────
+# ── Database & CRM Logic (Isolated Keys for TahaSearcher) ───────────────────
 def db_cmd(*args):
     if not UPSTASH_URL or not UPSTASH_TOKEN: return None
     try:
         r = requests.post(UPSTASH_URL, headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"}, json=list(args), timeout=5)
         return r.json().get("result")
     except Exception: return None
+
+# Tier 1: General Bot Approval (Isolated Key: searcher_approved)
+def is_approved(user_id):
+    if str(user_id) == str(ADMIN_ID): return True
+    return db_cmd("SISMEMBER", "searcher_approved_users", str(user_id)) == 1
+
+def approve_user(user_id): db_cmd("SADD", "searcher_approved_users", str(user_id))
+def revoke_user(user_id): db_cmd("SREM", "searcher_approved_users", str(user_id))
+def get_all_users(): return db_cmd("SMEMBERS", "searcher_approved_users") or []
+
+# Tier 2: Google Engine Approval (Isolated Key: searcher_google_approved)
+def is_google_approved(user_id):
+    if str(user_id) == str(ADMIN_ID): return True
+    return db_cmd("SISMEMBER", "searcher_google_approved_users", str(user_id)) == 1
+
+def approve_google_user(user_id): db_cmd("SADD", "searcher_google_approved_users", str(user_id))
+def revoke_google_user(user_id): db_cmd("SREM", "searcher_google_approved_users", str(user_id))
+
+def save_user_info(user_id, name, username):
+    data = json.dumps({"name": name, "username": username}, ensure_ascii=False)
+    db_cmd("SET", f"uinfo:{user_id}", data)
+
+def get_user_info(user_id):
+    res = db_cmd("GET", f"uinfo:{user_id}")
+    if res:
+        try: return json.loads(res)
+        except: pass
+    return {"name": str(user_id), "username": ""}
+
+def log_history(user_id, engine, category, query):
+    ir_time = (datetime.utcnow() + timedelta(hours=3, minutes=30)).strftime("%Y-%m-%d %H:%M")
+    entry = {
+        "engine": engine,
+        "category": category,
+        "query": query,
+        "time": ir_time
+    }
+    db_cmd("LPUSH", f"shist:{user_id}", json.dumps(entry, ensure_ascii=False))
+    db_cmd("LTRIM", f"shist:{user_id}", "0", "19")
 
 # Tier 1: General Bot Approval
 def is_approved(user_id):
