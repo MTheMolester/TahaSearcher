@@ -35,23 +35,9 @@ BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 SESSIONS = {}
 
-# ── Bulletproof Gemini AI Configuration ────────────────────────────────────
-ai_model = None
+# Configure Gemini AI globally
 if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # Dynamically fetch available models and select the first one that supports text generation
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                ai_model = genai.GenerativeModel(m.name)
-                logging.info(f"✅ Successfully loaded Gemini model: {m.name}")
-                break
-        
-        # Fallback just in case the list is empty but the key works
-        if not ai_model:
-            ai_model = genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
-        logging.error(f"❌ Failed to initialize Gemini: {e}")
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ── Database & CRM Logic ──────────────────────────────────────────────
 def db_cmd(*args):
@@ -408,7 +394,7 @@ def handle_message(msg):
 
     if text in ("/start", "/help"): return send_main_menu(chat_id, user_id)
 
-    s = SESSIONS.get(chat_id, {})
+    s = SESSIONS.setdefault(chat_id, {})
     state = s.get("state")
 
     if state == "WAITING_ADMIN_ADD":
@@ -428,9 +414,9 @@ def handle_message(msg):
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
-    # ── AI Engine Logic (Gemini) ──
+    # ── Bulletproof AI Engine Logic (Auto-Fallback) ──
     if state == "WAITING_AI_PROMPT":
-        loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال فکر کردن است...")
+        loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال پردازش (ارزیابی مدل‌ها)...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
         log_history(user_id, "ai", "chat", text[:50] + "...")
@@ -438,14 +424,41 @@ def handle_message(msg):
         try:
             if not GEMINI_API_KEY:
                 raise Exception("GEMINI_API_KEY is not set in Render environment variables.")
-            if not ai_model:
-                raise Exception("هیچ مدل فعال Gemini برای حساب شما پیدا نشد (خطای تحریم یا مجوز).")
                 
-            response = ai_model.generate_content(text)
-            ai_response = response.text
+            # If the list of available models hasn't been fetched yet, pull it directly from Google
+            if "gemini_models" not in s:
+                raw_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                # Filter out known problematic aliases if needed, otherwise keep all
+                s["gemini_models"] = raw_models
+                
+            if not s["gemini_models"]:
+                raise Exception("هیچ مدلی برای کلید API شما یافت نشد.")
+
+            ai_response = None
+            last_err = ""
+            
+            # Iterate and brute-force through the list until a model successfully responds
+            for model_name in list(s["gemini_models"]):
+                try:
+                    temp_model = genai.GenerativeModel(model_name)
+                    response = temp_model.generate_content(text)
+                    ai_response = response.text
+                    break # SUCCESS! Exit the loop immediately.
+                except Exception as e:
+                    logging.warning(f"Model {model_name} failed with error: {e}")
+                    # Remove the broken model from the list so we don't try it again next time
+                    if model_name in s["gemini_models"]:
+                        s["gemini_models"].remove(model_name)
+                    last_err = str(e)
+                    continue # Try the next model
+                    
+            if not ai_response:
+                # If the loop finishes and we STILL have no response, the API is entirely down for this key
+                raise Exception(f"تمامی مدل‌های در دسترس خطای 404 یا محدودیت دادند. آخرین خطا: {last_err}")
+                
         except Exception as e:
             logging.error(f"AI Error: {e}")
-            ai_response = f"❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد.\n\nجزئیات فنی: `{e}`"
+            ai_response = f"❌ متاسفانه خطایی در ارتباط با سرور گوگل رخ داد.\n\nجزئیات فنی: `{e}`"
             
         if loading_id: delete_message(chat_id, loading_id)
         
