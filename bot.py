@@ -1,9 +1,11 @@
 import os
+import io
 import json
 import logging
 import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
+from bs4 import BeautifulSoup
 
 try:
     from ddgs import DDGS
@@ -22,7 +24,6 @@ UPSTASH_TOKEN = os.environ.get("UPSTASH_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "@YourAdminID")
 
-# Official Google API Configs
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
 
@@ -101,6 +102,17 @@ def send_photo(chat_id, photo_url, caption, keyboard=None):
     except Exception:
         send_message(chat_id, f"🖼 [لینک تصویر]({photo_url})\n\n{caption}", keyboard)
 
+def send_document(chat_id, file_stream, filename, caption="", keyboard=None):
+    try:
+        payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+        if keyboard: payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
+        files = {"file": (filename, file_stream, "text/plain")}
+        r = requests.post(f"{BALE_API}/sendDocument", data=payload, files=files, verify=False, timeout=20)
+        return r.ok
+    except Exception as e:
+        logging.error(f"File Upload Error: {e}")
+        return False
+
 def answer_callback(callback_query_id, text=None, show_alert=False):
     payload = {"callback_query_id": callback_query_id}
     if text: payload.update({"text": text, "show_alert": show_alert})
@@ -108,6 +120,39 @@ def answer_callback(callback_query_id, text=None, show_alert=False):
 
 def btn(text, data): return {"text": text, "callback_data": data}
 def url_btn(text, url): return {"text": text, "url": url}
+
+# ── 🕷️ Article Text Extractor ───────────────────────────────────────────────
+def extract_article_text(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(url, headers=headers, timeout=12)
+        if not r.ok: return None, None
+        
+        soup = BeautifulSoup(r.content, "html.parser")
+        
+        # Remove noisy elements
+        for elem in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
+            elem.extract()
+            
+        title = soup.title.string.strip() if soup.title else "Article"
+        
+        content = []
+        # Target headers, paragraphs, and list items for clean formatting
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
+            text = tag.get_text(separator=" ", strip=True)
+            if text:
+                if tag.name.startswith('h'):
+                    content.append(f"\n\n─── {text} ───\n")
+                elif tag.name == 'li':
+                    content.append(f"• {text}")
+                else:
+                    content.append(text)
+                    
+        final_text = f"🌐 عنوان: {title}\n🔗 لینک اصلی: {url}\n" + "="*40 + "\n" + "\n".join(content)
+        return final_text, title
+    except Exception as e:
+        logging.error(f"Scraper error for {url}: {e}")
+        return None, None
 
 # ── Security Blockers ───────────────────────────────────────────────────────
 def check_membership(user_id):
@@ -132,16 +177,11 @@ def access_denied_message(chat_id, user_id, message_id=None):
 
 # ── 🎯 Search Engine Core ──────────────────────────────────────────────────
 def google_official_search(query, category="web"):
-    if not GOOGLE_API_KEY or not GOOGLE_CX: 
-        logging.error("Google API Keys are missing in Environment Variables!")
-        return []
+    if not GOOGLE_API_KEY or not GOOGLE_CX: return []
     try:
         url = "https://www.googleapis.com/customsearch/v1"
         params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CX, "q": query, "num": 10}
-        
-        # New: Tell Google to return images instead of text if category is images
-        if category == "images":
-            params["searchType"] = "image"
+        if category == "images": params["searchType"] = "image"
             
         r = requests.get(url, params=params, timeout=10)
         if r.ok:
@@ -150,8 +190,7 @@ def google_official_search(query, category="web"):
                 return [{"image": i.get("link", ""), "title": i.get("title", ""), "source": i.get("displayLink", "")} for i in items]
             else:
                 return [{"title": i.get("title",""), "body": i.get("snippet","")[:120], "href": i.get("link","")} for i in items]
-    except Exception as e:
-        logging.error(f"Google Search Error: {e}")
+    except Exception: pass
     return []
 
 def fetch_search_results(query, engine="default", category="web"):
@@ -160,18 +199,26 @@ def fetch_search_results(query, engine="default", category="web"):
 
     try:
         with DDGS() as ddgs:
-            if category == "web": return list(ddgs.text(query, max_results=30))
-            elif category == "images": return list(ddgs.images(query, max_results=30))
-            elif category == "news": return list(ddgs.news(query, max_results=30))
+            if category == "web": 
+                res = list(ddgs.text(query, max_results=30))
+                if res: return res
+            elif category == "images": 
+                res = list(ddgs.images(query, max_results=30))
+                if res: return res
+            elif category == "news": 
+                res = list(ddgs.news(query, max_results=30))
+                if res: return res
     except Exception: pass
 
     if category == "web":
-        instances = ["https://searx.tiekoetter.com/search", "https://paulgo.io/search"]
+        instances = ["https://searx.tiekoetter.com/search", "https://paulgo.io/search", "https://searx.work/search"]
         for url in instances:
             try:
                 r = requests.get(url, params={"q": query, "format": "json"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                if r.ok and r.json().get("results"):
-                    return [{"title": i.get("title",""), "body": i.get("content","")[:120], "href": i.get("url","")} for i in r.json()["results"][:30]]
+                if r.ok:
+                    data = r.json().get("results", [])
+                    if data:
+                        return [{"title": i.get("title",""), "body": i.get("content","")[:120], "href": i.get("url","")} for i in data[:30]]
             except Exception: pass
 
     return []
@@ -213,13 +260,22 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     page_items = results[(page_num - 1) * 5 : page_num * 5]
     lines = [f"🌐 **نتایج جستجو ({engine.upper()})**", f"🔍 **عبارت:** `{query}` | **صفحه:** {page_num}\n"]
     
-    row_links = []
+    row_urls = []
+    row_dls = []
+    
     for i, item in enumerate(page_items):
         title, snippet, link = item.get("title", "بدون عنوان")[:50], item.get("body", "")[:120] + "...", item.get("href", "")
-        lines.extend([f"{['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣'][i]} **{title}**", f"📝 {snippet}\n"])
-        row_links.append(url_btn(str(i+1), link))
+        num_emoji = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣'][i]
+        lines.extend([f"{num_emoji} **{title}**", f"📝 {snippet}\n"])
         
-    kb = [row_links]
+        # Calculate the absolute index for the callback memory
+        global_idx = (page_num - 1) * 5 + i
+        
+        # Build the two interactive rows
+        row_urls.append(url_btn(f"{num_emoji} 🔗", link))
+        row_dls.append(btn(f"{num_emoji} 📥", f"dltext:{global_idx}"))
+        
+    kb = [row_urls, row_dls]
     nav_row = []
     if (page_num * 5) < len(results): nav_row.append(btn("⬅️ بعدی", f"wpage:next:{page_num+1}"))
     if page_num > 1: nav_row.append(btn("➡️ قبلی", f"wpage:prev:{page_num-1}"))
@@ -242,13 +298,19 @@ def render_news_search(chat_id, message_id=None, page_num=1):
     page_items = results[(page_num - 1) * 5 : page_num * 5]
     lines = [f"📰 **اخبار مرتبط با:** `{query}`", f"📄 **صفحه:** {page_num}\n"]
     
-    row_links = []
+    row_urls = []
+    row_dls = []
+    
     for i, item in enumerate(page_items):
         title, date, source, link = item.get("title", "بدون عنوان")[:50], item.get("date", "")[:10], item.get("source", "خبرگذاری"), item.get("url", item.get("href", ""))
-        lines.extend([f"{['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣'][i]} **{title}**", f"🗞 {source} | 📅 {date}\n"])
-        row_links.append(url_btn(str(i+1), link))
+        num_emoji = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣'][i]
+        lines.extend([f"{num_emoji} **{title}**", f"🗞 {source} | 📅 {date}\n"])
         
-    kb = [row_links]
+        global_idx = (page_num - 1) * 5 + i
+        row_urls.append(url_btn(f"{num_emoji} 🔗", link))
+        row_dls.append(btn(f"{num_emoji} 📥", f"dltext:{global_idx}"))
+        
+    kb = [row_urls, row_dls]
     nav_row = []
     if (page_num * 5) < len(results): nav_row.append(btn("⬅️ بعدی", f"npage:next:{page_num+1}"))
     if page_num > 1: nav_row.append(btn("➡️ قبلی", f"npage:prev:{page_num-1}"))
@@ -330,11 +392,8 @@ def handle_message(msg):
         engine = s.get("engine", "default")
         category = s.get("category", "web")
         
-        # FIX: We now safely capture the Message ID of the hourglass!
         loading_msg = send_message(chat_id, f"⏳ در حال جستجوی عبارت `{text}` در موتور {engine.upper()}...")
-        loading_id = None
-        if loading_msg and loading_msg.get("ok"):
-            loading_id = loading_msg.get("result", {}).get("message_id")
+        loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
         log_history(user_id, engine, category, text)
         
@@ -376,6 +435,32 @@ def handle_callback(cq):
     elif kind == "req_google":
         send_message(ADMIN_ID, f"📩 **درخواست جدید برای گوگل!**\n👤 کاربر: `{user_id}`")
         return edit_message(chat_id, message_id, "⏳ **درخواست شما ارسال شد.**")
+
+    # ── Text Downloader Trigger ──
+    elif kind == "dltext":
+        idx = int(value)
+        results = s.get("results", [])
+        if idx >= len(results): return send_message(chat_id, "⚠️ نتیجه یافت نشد.")
+        
+        target_url = results[idx].get("href", results[idx].get("url", ""))
+        
+        # Send a separate temporary loading message to not overwrite the search results UI
+        loading_msg = send_message(chat_id, "⏳ در حال استخراج و ساخت فایل متنی...")
+        load_msg_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
+        
+        text_content, doc_title = extract_article_text(target_url)
+        if load_msg_id: delete_message(chat_id, load_msg_id)
+        
+        if not text_content:
+            return send_message(chat_id, "❌ متاسفانه سیستم امنیتی این سایت، اجازه استخراج متن را نمی‌دهد یا محتوای متنی ندارد.")
+            
+        # Clean title to prevent invalid filename characters
+        safe_title = "".join(c for c in doc_title if c.isalnum() or c in " _-").strip() or "Article"
+        filename = f"{safe_title[:40]}.txt"
+        
+        # Load content directly into RAM
+        file_stream = io.BytesIO(text_content.encode('utf-8'))
+        send_document(chat_id, file_stream, filename, f"📥 **متن استخراج شده مقاله:**\n{doc_title}")
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
