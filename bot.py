@@ -187,7 +187,7 @@ def access_denied_message(chat_id, user_id, message_id=None):
     if message_id: edit_message(chat_id, message_id, text)
     else: send_message(chat_id, text)
 
-# ── 🎯 Search Engine Core (UPDATED NO-GOOGLE-FALLBACK) ─────────────────
+# ── 🎯 Search Engine Core (CUSTOM SCRAPER FALLBACKS) ─────────────────
 def google_official_search(query, category="web"):
     if not GOOGLE_API_KEY or not GOOGLE_CX: return []
     try:
@@ -225,29 +225,51 @@ def fetch_search_results(query, engine="default", category="web"):
     except Exception as e:
         logging.error(f"DDG Search failed (Likely IP block): {e}")
 
-    # 2. Try Reliable Searx Backups (Massive Free Pool)
+    # 2. Custom Web Scraper Fallbacks (Zero API Keys needed)
     if category == "web":
-        instances = [
-            "https://searx.be/search",
-            "https://searx.tiekoetter.com/search",
-            "https://paulgo.io/search",
-            "https://search.inetz.com/search",
-            "https://searx.roflcopter.fr/search",
-            "https://searx.work/search",
-            "https://search.mdn.eu/search",
-            "https://search.bus-hit.me/search"
-        ]
-        for url in instances:
-            try:
-                r = requests.get(url, params={"q": query, "format": "json"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                if r.ok:
-                    data = r.json().get("results", [])
-                    if data:
-                        return [{"title": i.get("title",""), "body": i.get("content","")[:120], "href": i.get("url","")} for i in data[:30]]
-            except Exception as e:
-                logging.error(f"Searx failed on {url}: {e}")
+        # Fallback A: Custom Bing Scraper
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            r = requests.get("https://www.bing.com/search", params={"q": query}, headers=headers, timeout=7)
+            if r.ok:
+                soup = BeautifulSoup(r.content, "html.parser")
+                results = []
+                for li in soup.find_all("li", class_="b_algo"):
+                    h2 = li.find("h2")
+                    if h2 and h2.a:
+                        title = h2.a.get_text(strip=True)
+                        href = h2.a.get("href", "")
+                        p = li.find("p") or li.find("div", class_="b_caption")
+                        body = p.get_text(strip=True) if p else ""
+                        results.append({"title": title, "body": body[:120], "href": href})
+                if results:
+                    logging.info("✅ Bing Custom Scraper fallback successful.")
+                    return results
+        except Exception as e:
+            logging.error(f"Bing scraper failed: {e}")
 
-    # If everything fails, it returns empty (saving your Google quota)
+        # Fallback B: Custom Yahoo Scraper
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            r = requests.get("https://search.yahoo.com/search", params={"p": query}, headers=headers, timeout=7)
+            if r.ok:
+                soup = BeautifulSoup(r.content, "html.parser")
+                results = []
+                for div in soup.find_all("div", class_="algo"):
+                    title_a = div.find("a")
+                    desc_div = div.find("div", class_="compText") or div.find("div", class_="fc-falcon")
+                    if title_a:
+                        title = title_a.get_text(strip=True)
+                        href = title_a.get("href", "")
+                        body = desc_div.get_text(separator=" ", strip=True) if desc_div else ""
+                        results.append({"title": title, "body": body[:120], "href": href})
+                if results:
+                    logging.info("✅ Yahoo Custom Scraper fallback successful.")
+                    return results
+        except Exception as e:
+            logging.error(f"Yahoo scraper failed: {e}")
+
+    # If everything fails, it returns empty
     return []
 
 # ── 🎨 Menus & UI Renderers ────────────────────────────────────────────────
