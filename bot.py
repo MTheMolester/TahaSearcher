@@ -35,11 +35,23 @@ BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 SESSIONS = {}
 
-# Configure Gemini AI
+# ── Bulletproof Gemini AI Configuration ────────────────────────────────────
+ai_model = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # Switched to the universal 'gemini-pro' alias to prevent 404 region/key errors
-    ai_model = genai.GenerativeModel('gemini-pro')
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Dynamically fetch available models and select the first one that supports text generation
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                ai_model = genai.GenerativeModel(m.name)
+                logging.info(f"✅ Successfully loaded Gemini model: {m.name}")
+                break
+        
+        # Fallback just in case the list is empty but the key works
+        if not ai_model:
+            ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        logging.error(f"❌ Failed to initialize Gemini: {e}")
 
 # ── Database & CRM Logic ──────────────────────────────────────────────
 def db_cmd(*args):
@@ -76,7 +88,6 @@ def get_user_info(user_id):
     return {"name": str(user_id), "username": ""}
 
 def log_history(user_id, engine, category, query):
-    # Updated to timezone-aware objects to fix the deprecation warning in the logs
     ir_tz = timezone(timedelta(hours=3, minutes=30))
     ir_time = datetime.now(ir_tz).strftime("%Y-%m-%d %H:%M")
     
@@ -427,16 +438,19 @@ def handle_message(msg):
         try:
             if not GEMINI_API_KEY:
                 raise Exception("GEMINI_API_KEY is not set in Render environment variables.")
+            if not ai_model:
+                raise Exception("هیچ مدل فعال Gemini برای حساب شما پیدا نشد (خطای تحریم یا مجوز).")
+                
             response = ai_model.generate_content(text)
             ai_response = response.text
         except Exception as e:
             logging.error(f"AI Error: {e}")
-            ai_response = "❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد. لطفاً مطمئن شوید که API Key به درستی تنظیم شده است."
+            ai_response = f"❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد.\n\nجزئیات فنی: `{e}`"
             
         if loading_id: delete_message(chat_id, loading_id)
         
         kb = [[btn("🔙 پایان چت و بازگشت به منو", "main:back")]]
-        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی (Gemini):**\n\n{ai_response}", kb)
+        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی:**\n\n{ai_response}", kb)
 
     if state == "WAITING_KEYWORD":
         engine = s.get("engine", "default")
