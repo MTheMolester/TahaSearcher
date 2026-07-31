@@ -7,14 +7,13 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 
-# Import the web search library
 try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
 
-# Import the NEW AI chat library
-from duckai import DuckAI
+# Import the official Google Gemini SDK
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -30,10 +29,17 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "@YourAdminID")
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") # New Gemini Key
 
 BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 SESSIONS = {}
+
+# Configure Gemini AI
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Using the fast and efficient gemini-1.5-flash model
+    ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # ── Database & CRM Logic ──────────────────────────────────────────────
 def db_cmd(*args):
@@ -254,10 +260,10 @@ def send_search_menu(chat_id, user_id, message_id):
 
 def send_ai_menu(chat_id, message_id):
     kb = [
-        [btn("💬 چت با هوش مصنوعی", "ai:chat")],
+        [btn("💬 چت با هوش مصنوعی (Gemini)", "ai:chat")],
         [btn("🔙 بازگشت به منوی اصلی", "main:back")]
     ]
-    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nآماده پاسخگویی به سوالات شما با استفاده از GPT-4o-Mini!"
+    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nپاسخگویی سریع و دقیق به سوالات شما با استفاده از Google Gemini 1.5!"
     edit_message(chat_id, message_id, text, kb)
 
 def send_category_menu(chat_id, message_id, engine_name):
@@ -408,7 +414,7 @@ def handle_message(msg):
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
-    # ── AI Engine Logic (UPDATED) ──
+    # ── AI Engine Logic (Gemini) ──
     if state == "WAITING_AI_PROMPT":
         loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال فکر کردن است...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
@@ -416,16 +422,18 @@ def handle_message(msg):
         log_history(user_id, "ai", "chat", text[:50] + "...")
         
         try:
-            # We now use DuckAI instead of DDGS to fetch the AI response
-            ai_response = DuckAI().chat(text, model="gpt-4o-mini")
+            if not GEMINI_API_KEY:
+                raise Exception("GEMINI_API_KEY is not set.")
+            response = ai_model.generate_content(text)
+            ai_response = response.text
         except Exception as e:
             logging.error(f"AI Error: {e}")
-            ai_response = "❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد. لطفاً دوباره تلاش کنید."
+            ai_response = "❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد. لطفاً مطمئن شوید که API Key به درستی تنظیم شده است."
             
         if loading_id: delete_message(chat_id, loading_id)
         
         kb = [[btn("🔙 پایان چت و بازگشت به منو", "main:back")]]
-        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی:**\n\n{ai_response}", kb)
+        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی (Gemini):**\n\n{ai_response}", kb)
 
     if state == "WAITING_KEYWORD":
         engine = s.get("engine", "default")
@@ -510,7 +518,7 @@ def handle_callback(cq):
     elif kind == "ai":
         if value == "chat":
             s["state"] = "WAITING_AI_PROMPT"
-            text = "🤖 **حالت چت با هوش مصنوعی فعال شد!**\n\nلطفاً سوال یا درخواست خود را تایپ کنید:\n*(برای خروج، از دکمه زیر یا دستور /start استفاده کنید)*"
+            text = "🤖 **حالت چت با هوش مصنوعی (Gemini) فعال شد!**\n\nلطفاً سوال یا درخواست خود را تایپ کنید:\n*(برای خروج، از دکمه زیر یا دستور /start استفاده کنید)*"
             kb = [[btn("🔙 لغو و بازگشت به منوی اصلی", "main:back")]]
             return edit_message(chat_id, message_id, text, kb)
 
