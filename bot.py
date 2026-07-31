@@ -2,7 +2,12 @@ import os
 import logging
 import requests
 from flask import Flask, request, jsonify
-from duckduckgo_search import DDGS 
+
+# Safely import the new library name
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -37,7 +42,7 @@ def answer_callback(callback_query_id):
 def btn(text, data): return {"text": text, "callback_data": data}
 def url_btn(text, url): return {"text": text, "url": url}
 
-# ── 🌐 The Unbreakable Dual-Engine Search ──────────────────────────────────
+# ── 🌐 The Unbreakable Multi-Engine Search ─────────────────────────────────
 def fetch_search_results(query):
     results = []
     
@@ -50,24 +55,45 @@ def fetch_search_results(query):
     except Exception as e:
         logging.warning(f"DuckDuckGo failed/blocked: {e}")
 
-    # Engine 2: SearxNG Fallback (If DDG blocks the Render IP)
-    try:
-        logging.info("Attempting fallback to SearxNG...")
-        url = "https://searx.be/search"
-        params = {"q": query, "format": "json"}
-        r = requests.get(url, params=params, timeout=10)
-        if r.ok:
-            data = r.json()
-            for item in data.get("results", [])[:30]:
-                results.append({
-                    "title": item.get("title", ""),
-                    "body": item.get("content", "")[:120],
-                    "href": item.get("url", "")
-                })
-            return results
-    except Exception as e:
-        logging.error(f"SearxNG fallback failed: {e}")
-        
+    # Engine 2: The Rotating SearxNG Fallback
+    # If one server blocks us, we instantly pivot to the next one
+    instances = [
+        "https://searx.tiekoetter.com/search",
+        "https://searx.work/search",
+        "https://searx.ro/search",
+        "https://paulgo.io/search",
+        "https://search.mdosch.de/search"
+    ]
+    
+    # Fake a real Google Chrome browser so we don't get blocked
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    for url in instances:
+        try:
+            logging.info(f"Attempting fallback to {url}...")
+            params = {"q": query, "format": "json"}
+            r = requests.get(url, params=params, headers=headers, timeout=6)
+            
+            if r.ok:
+                # Safely try to parse JSON. If it is HTML (Cloudflare block), it skips gracefully.
+                try:
+                    data = r.json()
+                    for item in data.get("results", [])[:30]:
+                        results.append({
+                            "title": item.get("title", ""),
+                            "body": item.get("content", "")[:120],
+                            "href": item.get("url", "")
+                        })
+                    if results:
+                        logging.info(f"✅ Successfully extracted data from {url}")
+                        return results
+                except Exception:
+                    logging.warning(f"⚠️ {url} sent HTML instead of JSON. Skipping to next server...")
+        except Exception as e:
+            logging.warning(f"❌ Failed to connect to {url}: {e}")
+            
     return results
 
 def render_web_search(chat_id, message_id=None, page_num=1):
@@ -75,7 +101,7 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     query = SESSIONS.get(chat_id, {}).get("search_query", "")
     
     if not results:
-        text = "❌ متاسفانه هیچ نتیجه‌ای پیدا نشد."
+        text = "❌ متاسفانه هیچ نتیجه‌ای پیدا نشد. لطفاً چند دقیقه دیگر دوباره تلاش کنید."
         if message_id: return edit_message(chat_id, message_id, text)
         else: return send_message(chat_id, text)
 
@@ -131,7 +157,6 @@ def handle_message(msg):
     SESSIONS.setdefault(chat_id, {})["search_query"] = text
     
     try:
-        # Trigger the new unbreakable search function
         results = fetch_search_results(text)
         SESSIONS[chat_id]["web_results"] = results
         render_web_search(chat_id, None, page_num=1)
