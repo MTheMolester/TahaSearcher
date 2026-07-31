@@ -7,10 +7,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 
-try:
-    from ddgs import DDGS
-except ImportError:
-    from duckduckgo_search import DDGS
+# The clean, updated import
+from ddgs import DDGS
 
 import google.generativeai as genai
 
@@ -206,7 +204,6 @@ def google_official_search(query, category="web"):
     return []
 
 def fetch_search_results(query, engine="default", category="web"):
-    # Only use Google API if the user specifically chose the Google Engine
     if engine == "google":
         return google_official_search(query, category)
 
@@ -223,9 +220,9 @@ def fetch_search_results(query, engine="default", category="web"):
                 res = list(ddgs.news(query, safesearch="off", max_results=30))
                 if res: return res
     except Exception as e:
-        logging.error(f"DDG Search failed (Likely IP block): {e}")
+        logging.error(f"DDG Search failed: {e}")
 
-    # 2. Custom Web Scraper Fallbacks (Zero API Keys needed)
+    # 2. Custom Web Scraper Fallbacks
     if category == "web":
         # Fallback A: Custom Bing Scraper
         try:
@@ -269,7 +266,6 @@ def fetch_search_results(query, engine="default", category="web"):
         except Exception as e:
             logging.error(f"Yahoo scraper failed: {e}")
 
-    # If everything fails, it returns empty
     return []
 
 # ── 🎨 Menus & UI Renderers ────────────────────────────────────────────────
