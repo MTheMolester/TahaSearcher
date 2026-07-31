@@ -1,5 +1,5 @@
 flask
 requests
 beautifulsoup4
-duckduckgo-search>=6.1.0
+ddgs
 google-generativeai
