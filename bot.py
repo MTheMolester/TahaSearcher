@@ -79,7 +79,7 @@ def log_action(user_id, action_type, details):
     
     entry = {"time": ir_time, "action": action_type, "details": details}
     db_cmd("LPUSH", f"shist:{user_id}", json.dumps(entry, ensure_ascii=False))
-    db_cmd("LTRIM", f"shist:{user_id}", "0", "199") # Keeps the last 200 actions precisely recorded
+    db_cmd("LTRIM", f"shist:{user_id}", "0", "199") 
 
 # ── Bale API Helpers ────────────────────────────────────────────────────────
 def api_call(method, payload):
@@ -419,7 +419,6 @@ def handle_message(msg):
         loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال پردازش...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
-        # OMNI-TRACKER: Log AI usage specifically
         log_action(user_id, "🧠 AI CHAT", f"Prompt: {text[:80]}...")
         
         try:
@@ -437,22 +436,18 @@ def handle_message(msg):
             
             for model_name in list(s["gemini_models"]):
                 try:
-                    # FIX: Inject strict system instruction so it NEVER leaks thinking steps
-                    temp_model = genai.GenerativeModel(
-                        model_name,
-                        system_instruction="You are a helpful assistant. NEVER output your internal thinking, reasoning, scratchpad, or drafting steps. Provide ONLY the final, polished response directly to the user."
+                    temp_model = genai.GenerativeModel(model_name)
+                    
+                    # FIX: Hard-injected strict prompt wrapping to completely disable internal thinking
+                    strict_prompt = (
+                        "INSTRUCTION: You are a helpful assistant. YOU MUST NEVER output your internal thinking, reasoning, or drafting steps. "
+                        "Do not include any English brainstorming or scratchpad text. Output ONLY the final, polished response.\n\n"
+                        f"USER QUERY: {text}"
                     )
                     
-                    response = temp_model.generate_content(text)
-                    ai_response = response.text
-                    
-                    # FIX: Physical text filter to chop off any remaining hallucinatory reasoning tags
-                    if "*پاسخ:" in ai_response:
-                        ai_response = ai_response.split("*پاسخ:")[-1].strip()
-                    elif "پاسخ:" in ai_response:
-                        ai_response = ai_response.split("پاسخ:")[-1].strip()
-                        
-                    break # SUCCESS! Exit the loop immediately.
+                    response = temp_model.generate_content(strict_prompt)
+                    ai_response = response.text.strip()
+                    break 
                 except Exception as e:
                     logging.warning(f"Model {model_name} failed: {e}")
                     if model_name in s["gemini_models"]:
@@ -479,7 +474,6 @@ def handle_message(msg):
         loading_msg = send_message(chat_id, f"⏳ در حال جستجو...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
-        # OMNI-TRACKER: Log searches with exact engine/category data
         log_action(user_id, f"🔍 {engine.upper()} SEARCH ({category})", f"Query: {text}")
         
         results = fetch_search_results(text, engine, category)
@@ -542,7 +536,6 @@ def handle_callback(cq):
         safe_title = "".join(c for c in doc_title if c.isalnum() or c in " _-").strip() or "Article"
         filename = f"{safe_title[:40]}.txt"
         
-        # OMNI-TRACKER: Log the exact file they ripped from the internet
         log_action(user_id, "📥 FILE DOWNLOAD", f"Title: {safe_title} | URL: {target_url}")
         
         file_stream = io.BytesIO(text_content.encode('utf-8'))
@@ -612,7 +605,6 @@ def handle_callback(cq):
         if user_id != str(ADMIN_ID): return
         target_user = value
         
-        # Display the 10 most recent logs inline
         history_raw = db_cmd("LRANGE", f"shist:{target_user}", "0", "9")
         
         lines = [f"🗂 **پیش‌نمایش تاریخچه کاربر:** `{target_user}`\n"]
@@ -622,7 +614,6 @@ def handle_callback(cq):
                 lines.append(f"{i+1}️⃣ `{h.get('action')}`\n└ 📝 {h.get('details')}\n└ 🕒 {h.get('time')}\n")
             except: pass
             
-        # The new Forensic Download Button
         kb = [
             [btn("📥 دانلود کل لاگ (Full Download)", f"admin_log:{target_user}")],
             [btn("🔙 بازگشت به لیست", "admin:list")]
@@ -630,12 +621,10 @@ def handle_callback(cq):
         delete_message(chat_id, message_id)
         send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "هیچ فعالیتی ثبت نشده است.", kb)
 
-    # ── ADVANCED LOG EXPORTER TRIGGER ──
     elif kind == "admin_log":
         if user_id != str(ADMIN_ID): return
         target_user = value
         
-        # Fetch up to 200 items from the database
         history_raw = db_cmd("LRANGE", f"shist:{target_user}", "0", "-1")
         if not history_raw:
             return answer_callback(cq["id"], "❌ لاگی برای این کاربر وجود ندارد.", show_alert=True)
