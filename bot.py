@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import requests
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
@@ -183,7 +184,7 @@ def access_denied_message(chat_id, user_id, message_id=None):
     if message_id: edit_message(chat_id, message_id, text)
     else: send_message(chat_id, text)
 
-# ── 🎯 Search Engine Core ──────────────────────────────────────────────────
+# ── 🎯 Search Engine Core (DUCKDUCKGO BANNED FROM IMAGES) ─────────────────
 def google_official_search(query, category="web"):
     if not GOOGLE_API_KEY or not GOOGLE_CX: return []
     try:
@@ -205,12 +206,19 @@ def fetch_search_results(query, engine="default", category="web"):
     if engine == "google":
         return google_official_search(query, category)
 
-    # ── CATEGORY: IMAGES ──
+    safe_query = urllib.parse.quote_plus(query)
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+
+    # ── CATEGORY: IMAGES (Bing & Yahoo Only) ──
     if category == "images":
-        # 1. Primary Engine for Images: Custom Bing Scraper (Extremely accurate for Persian queries)
+        # 1. Bing Images Scraper (Primary)
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            r = requests.get("https://www.bing.com/images/search", params={"q": query}, headers=headers, timeout=7)
+            r = requests.get(f"https://www.bing.com/images/search?q={safe_query}", headers=headers, timeout=7)
             if r.ok:
                 soup = BeautifulSoup(r.content, "html.parser")
                 results = []
@@ -226,19 +234,32 @@ def fetch_search_results(query, engine="default", category="web"):
                                 results.append({"image": img_url, "title": title[:100], "source": source})
                         except: pass
                 if results:
-                    logging.info("✅ Bing Images Custom Scraper successful.")
+                    logging.info("✅ Bing Images successful.")
                     return results[:30]
         except Exception as e:
             logging.error(f"Bing Images scraper failed: {e}")
 
-        # 2. Fallback for Images: DuckDuckGo
+        # 2. Yahoo Images Scraper (Fallback)
         try:
-            with DDGS() as ddgs:
-                res = list(ddgs.images(query, safesearch="off", max_results=30))
-                if res: return res
+            r = requests.get(f"https://images.search.yahoo.com/search/images?p={safe_query}", headers=headers, timeout=7)
+            if r.ok:
+                soup = BeautifulSoup(r.content, "html.parser")
+                results = []
+                for li in soup.find_all("li", class_="ld"):
+                    a_tag = li.find("a")
+                    img_tag = li.find("img")
+                    if a_tag and img_tag:
+                        img_url = img_tag.get("data-src") or img_tag.get("src")
+                        if img_url and img_url.startswith("http"):
+                            title = img_tag.get("alt", "بدون عنوان")
+                            source_url = a_tag.get("href", "")
+                            results.append({"image": img_url, "title": title[:100], "source": source_url})
+                if results:
+                    logging.info("✅ Yahoo Images successful.")
+                    return results[:30]
         except Exception as e:
-            logging.error(f"DDG Images failed: {e}")
-        
+            logging.error(f"Yahoo Images scraper failed: {e}")
+
         return []
 
     # ── CATEGORY: WEB & NEWS ──
@@ -252,35 +273,12 @@ def fetch_search_results(query, engine="default", category="web"):
                 res = list(ddgs.news(query, safesearch="off", max_results=30))
                 if res: return res
     except Exception as e:
-        logging.error(f"DDG Search failed: {e}")
+        logging.error(f"DDG Web/News Search failed: {e}")
 
     # 2. Custom Web Scraper Fallbacks
     if category == "web":
-        # Fallback A: Custom Bing Web Scraper
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            r = requests.get("https://www.bing.com/search", params={"q": query}, headers=headers, timeout=7)
-            if r.ok:
-                soup = BeautifulSoup(r.content, "html.parser")
-                results = []
-                for li in soup.find_all("li", class_="b_algo"):
-                    h2 = li.find("h2")
-                    if h2 and h2.a:
-                        title = h2.a.get_text(strip=True)
-                        href = h2.a.get("href", "")
-                        p = li.find("p") or li.find("div", class_="b_caption")
-                        body = p.get_text(strip=True) if p else ""
-                        results.append({"title": title, "body": body[:120], "href": href})
-                if results:
-                    logging.info("✅ Bing Web Custom Scraper fallback successful.")
-                    return results
-        except Exception as e:
-            logging.error(f"Bing Web scraper failed: {e}")
-
-        # Fallback B: Custom Yahoo Web Scraper
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            r = requests.get("https://search.yahoo.com/search", params={"p": query}, headers=headers, timeout=7)
+            r = requests.get(f"https://search.yahoo.com/search?p={safe_query}", headers=headers, timeout=7)
             if r.ok:
                 soup = BeautifulSoup(r.content, "html.parser")
                 results = []
@@ -293,10 +291,29 @@ def fetch_search_results(query, engine="default", category="web"):
                         body = desc_div.get_text(separator=" ", strip=True) if desc_div else ""
                         results.append({"title": title, "body": body[:120], "href": href})
                 if results:
-                    logging.info("✅ Yahoo Web Custom Scraper fallback successful.")
+                    logging.info("✅ Yahoo Web fallback successful.")
                     return results
         except Exception as e:
             logging.error(f"Yahoo Web scraper failed: {e}")
+            
+        try:
+            r = requests.get(f"https://www.bing.com/search?q={safe_query}", headers=headers, timeout=7)
+            if r.ok:
+                soup = BeautifulSoup(r.content, "html.parser")
+                results = []
+                for li in soup.find_all("li", class_="b_algo"):
+                    h2 = li.find("h2")
+                    if h2 and h2.a:
+                        title = h2.a.get_text(strip=True)
+                        href = h2.a.get("href", "")
+                        p = li.find("p") or li.find("div", class_="b_caption")
+                        body = p.get_text(strip=True) if p else ""
+                        results.append({"title": title, "body": body[:120], "href": href})
+                if results:
+                    logging.info("✅ Bing Web fallback successful.")
+                    return results
+        except Exception as e:
+            logging.error(f"Bing Web scraper failed: {e}")
 
     return []
 
@@ -338,7 +355,7 @@ def send_category_menu(chat_id, message_id, engine_name):
         [btn("📰 اخبار (News)", "menu:cat:news")],
         [btn("🔙 بازگشت به منوی جستجو", "main:search_menu")]
     ]
-    text = f"⚙️ **موتور انتخاب شده:** `{engine_name.upper()}`\n\nلطفاً دسته‌بندی جستجو را انتخاب کنید:"
+    text = f"⚙️ **موتور انتخاب selected:** `{engine_name.upper()}`\n\nلطفاً دسته‌بندی جستجو را انتخاب کنید:"
     edit_message(chat_id, message_id, text, kb)
 
 def render_web_search(chat_id, message_id=None, page_num=1):
