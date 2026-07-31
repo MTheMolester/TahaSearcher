@@ -187,7 +187,7 @@ def access_denied_message(chat_id, user_id, message_id=None):
     if message_id: edit_message(chat_id, message_id, text)
     else: send_message(chat_id, text)
 
-# ── 🎯 Search Engine Core ──────────────────────────────────────────────────
+# ── 🎯 Search Engine Core (UPDATED NO-GOOGLE-FALLBACK) ─────────────────
 def google_official_search(query, category="web"):
     if not GOOGLE_API_KEY or not GOOGLE_CX: return []
     try:
@@ -206,9 +206,11 @@ def google_official_search(query, category="web"):
     return []
 
 def fetch_search_results(query, engine="default", category="web"):
+    # Only use Google API if the user specifically chose the Google Engine
     if engine == "google":
         return google_official_search(query, category)
 
+    # 1. Try DuckDuckGo
     try:
         with DDGS() as ddgs:
             if category == "web": 
@@ -220,10 +222,21 @@ def fetch_search_results(query, engine="default", category="web"):
             elif category == "news": 
                 res = list(ddgs.news(query, safesearch="off", max_results=30))
                 if res: return res
-    except Exception: pass
+    except Exception as e:
+        logging.error(f"DDG Search failed (Likely IP block): {e}")
 
+    # 2. Try Reliable Searx Backups (Massive Free Pool)
     if category == "web":
-        instances = ["https://searx.tiekoetter.com/search", "https://paulgo.io/search", "https://searx.work/search"]
+        instances = [
+            "https://searx.be/search",
+            "https://searx.tiekoetter.com/search",
+            "https://paulgo.io/search",
+            "https://search.inetz.com/search",
+            "https://searx.roflcopter.fr/search",
+            "https://searx.work/search",
+            "https://search.mdn.eu/search",
+            "https://search.bus-hit.me/search"
+        ]
         for url in instances:
             try:
                 r = requests.get(url, params={"q": query, "format": "json"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
@@ -231,8 +244,10 @@ def fetch_search_results(query, engine="default", category="web"):
                     data = r.json().get("results", [])
                     if data:
                         return [{"title": i.get("title",""), "body": i.get("content","")[:120], "href": i.get("url","")} for i in data[:30]]
-            except Exception: pass
+            except Exception as e:
+                logging.error(f"Searx failed on {url}: {e}")
 
+    # If everything fails, it returns empty (saving your Google quota)
     return []
 
 # ── 🎨 Menus & UI Renderers ────────────────────────────────────────────────
@@ -436,10 +451,8 @@ def handle_message(msg):
             
             for model_name in list(s["gemini_models"]):
                 try:
-                    # Initialize completely clean without weak system parameters
                     temp_model = genai.GenerativeModel(model_name)
                     
-                    # FIX: Brutal, un-bypassable prompt injection to absolutely kill internal scratching
                     strict_prompt = (
                         "You are a direct-answering assistant. You must bypass all internal reasoning.\n"
                         "CRITICAL RULES:\n"
