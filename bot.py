@@ -204,14 +204,15 @@ def fetch_search_results(query, engine="default", category="web"):
 
     try:
         with DDGS() as ddgs:
+            # SAFESEARCH EXPLICITLY TURNED OFF
             if category == "web": 
-                res = list(ddgs.text(query, max_results=30))
+                res = list(ddgs.text(query, safesearch="off", max_results=30))
                 if res: return res
             elif category == "images": 
-                res = list(ddgs.images(query, max_results=30))
+                res = list(ddgs.images(query, safesearch="off", max_results=30))
                 if res: return res
             elif category == "news": 
-                res = list(ddgs.news(query, max_results=30))
+                res = list(ddgs.news(query, safesearch="off", max_results=30))
                 if res: return res
     except Exception: pass
 
