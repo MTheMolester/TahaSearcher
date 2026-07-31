@@ -225,7 +225,7 @@ def fetch_search_results(query, engine="default", category="web"):
 
     return []
 
-# ── 🎨 Menus & UI Renderers (UPDATED WITH AI HUB) ──────────────────────────
+# ── 🎨 Menus & UI Renderers ────────────────────────────────────────────────
 def send_main_menu(chat_id, user_id, message_id=None):
     SESSIONS[chat_id] = {"state": "IDLE"}
     kb = [
@@ -253,7 +253,7 @@ def send_ai_menu(chat_id, message_id):
         [btn("💬 چت با هوش مصنوعی", "ai:chat")],
         [btn("🔙 بازگشت به منوی اصلی", "main:back")]
     ]
-    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nموتور هوش مصنوعی به زودی در اینجا متصل می‌شود!"
+    text = "🤖 **بخش هوش مصنوعی (AI Engine)**\n\nآماده پاسخگویی به سوالات شما با استفاده از GPT-4o-Mini!"
     edit_message(chat_id, message_id, text, kb)
 
 def send_category_menu(chat_id, message_id, engine_name):
@@ -404,6 +404,26 @@ def handle_message(msg):
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
+    # ── AI Engine Logic ──
+    if state == "WAITING_AI_PROMPT":
+        loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال فکر کردن است...")
+        loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
+        
+        log_history(user_id, "ai", "chat", text[:50] + "...")
+        
+        try:
+            with DDGS() as ddgs:
+                # Calls the free GPT-4o-mini endpoint from DuckDuckGo
+                ai_response = ddgs.chat(text, model="gpt-4o-mini")
+        except Exception as e:
+            logging.error(f"AI Error: {e}")
+            ai_response = "❌ متاسفانه خطایی در ارتباط با سرور هوش مصنوعی رخ داد. لطفاً دوباره تلاش کنید."
+            
+        if loading_id: delete_message(chat_id, loading_id)
+        
+        kb = [[btn("🔙 پایان چت و بازگشت به منو", "main:back")]]
+        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی:**\n\n{ai_response}", kb)
+
     if state == "WAITING_KEYWORD":
         engine = s.get("engine", "default")
         category = s.get("category", "web")
@@ -486,8 +506,10 @@ def handle_callback(cq):
 
     elif kind == "ai":
         if value == "chat":
-            answer_callback(cq["id"], "⏳ در حال آماده‌سازی زیرساخت هوش مصنوعی...", show_alert=True)
-            return
+            s["state"] = "WAITING_AI_PROMPT"
+            text = "🤖 **حالت چت با هوش مصنوعی فعال شد!**\n\nلطفاً سوال یا درخواست خود را تایپ کنید:\n*(برای خروج، از دکمه زیر یا دستور /start استفاده کنید)*"
+            kb = [[btn("🔙 لغو و بازگشت به منوی اصلی", "main:back")]]
+            return edit_message(chat_id, message_id, text, kb)
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
