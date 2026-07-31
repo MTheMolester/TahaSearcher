@@ -30,7 +30,7 @@ BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 SESSIONS = {}
 
-# ── Database & CRM Logic (100% ISOLATED KEYS) ──────────────────────────────
+# ── Database & CRM Logic ──────────────────────────────────────────────
 def db_cmd(*args):
     if not UPSTASH_URL or not UPSTASH_TOKEN: return None
     try:
@@ -38,7 +38,6 @@ def db_cmd(*args):
         return r.json().get("result")
     except Exception: return None
 
-# Tier 1: General Bot Approval (Uses 'searcher_approved_users')
 def is_approved(user_id):
     if str(user_id) == str(ADMIN_ID): return True
     return db_cmd("SISMEMBER", "searcher_approved_users", str(user_id)) == 1
@@ -47,7 +46,6 @@ def approve_user(user_id): db_cmd("SADD", "searcher_approved_users", str(user_id
 def revoke_user(user_id): db_cmd("SREM", "searcher_approved_users", str(user_id))
 def get_all_users(): return db_cmd("SMEMBERS", "searcher_approved_users") or []
 
-# Tier 2: Google Engine Approval (Uses 'searcher_google_approved_users')
 def is_google_approved(user_id):
     if str(user_id) == str(ADMIN_ID): return True
     return db_cmd("SISMEMBER", "searcher_google_approved_users", str(user_id)) == 1
@@ -68,12 +66,7 @@ def get_user_info(user_id):
 
 def log_history(user_id, engine, category, query):
     ir_time = (datetime.utcnow() + timedelta(hours=3, minutes=30)).strftime("%Y-%m-%d %H:%M")
-    entry = {
-        "engine": engine,
-        "category": category,
-        "query": query,
-        "time": ir_time
-    }
+    entry = {"engine": engine, "category": category, "query": query, "time": ir_time}
     db_cmd("LPUSH", f"shist:{user_id}", json.dumps(entry, ensure_ascii=False))
     db_cmd("LTRIM", f"shist:{user_id}", "0", "19") 
 
@@ -99,6 +92,7 @@ def delete_message(chat_id, message_id):
 
 def send_photo(chat_id, photo_url, caption, keyboard=None):
     try:
+        if not photo_url: raise Exception("Empty URL")
         img_data = requests.get(photo_url, timeout=5).content
         payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
         if keyboard: payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
@@ -126,7 +120,7 @@ def check_membership(user_id):
 
 def force_join_message(chat_id, message_id=None):
     channel_link = f"https://ble.ir/{REQUIRED_CHANNEL.replace('@', '')}"
-    text = "⚠️ **برای استفاده از ربات TahaSearcher، ابتدا باید در کانال ما عضو شوید!**\n\nپس از عضویت، روی «بررسی عضویت» کلیک کنید."
+    text = "⚠️ **برای استفاده از ربات TahaSearcher، ابتدا باید در کانال ما عضو شوید!**"
     kb = [[{"text": "📣 عضویت در کانال", "url": channel_link}], [btn("🔄 بررسی عضویت", "main:check_join")]]
     if message_id: edit_message(chat_id, message_id, text, kb)
     else: send_message(chat_id, text, kb)
@@ -137,21 +131,32 @@ def access_denied_message(chat_id, user_id, message_id=None):
     else: send_message(chat_id, text)
 
 # ── 🎯 Search Engine Core ──────────────────────────────────────────────────
-def google_official_search(query):
-    if not GOOGLE_API_KEY or not GOOGLE_CX: return []
+def google_official_search(query, category="web"):
+    if not GOOGLE_API_KEY or not GOOGLE_CX: 
+        logging.error("Google API Keys are missing in Environment Variables!")
+        return []
     try:
         url = "https://www.googleapis.com/customsearch/v1"
         params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CX, "q": query, "num": 10}
+        
+        # New: Tell Google to return images instead of text if category is images
+        if category == "images":
+            params["searchType"] = "image"
+            
         r = requests.get(url, params=params, timeout=10)
         if r.ok:
-            return [{"title": i.get("title",""), "body": i.get("snippet","")[:120], "href": i.get("link","")} for i in r.json().get("items", [])]
+            items = r.json().get("items", [])
+            if category == "images":
+                return [{"image": i.get("link", ""), "title": i.get("title", ""), "source": i.get("displayLink", "")} for i in items]
+            else:
+                return [{"title": i.get("title",""), "body": i.get("snippet","")[:120], "href": i.get("link","")} for i in items]
     except Exception as e:
         logging.error(f"Google Search Error: {e}")
     return []
 
 def fetch_search_results(query, engine="default", category="web"):
     if engine == "google":
-        return google_official_search(query)
+        return google_official_search(query, category)
 
     try:
         with DDGS() as ddgs:
@@ -160,7 +165,6 @@ def fetch_search_results(query, engine="default", category="web"):
             elif category == "news": return list(ddgs.news(query, max_results=30))
     except Exception: pass
 
-    # SearxNG Fallback for web search
     if category == "web":
         instances = ["https://searx.tiekoetter.com/search", "https://paulgo.io/search"]
         for url in instances:
@@ -200,7 +204,11 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     s = SESSIONS.get(chat_id, {})
     results, query, engine = s.get("results", []), s.get("query", ""), s.get("engine", "default")
     
-    if not results: return edit_message(chat_id, message_id, "❌ متاسفانه هیچ نتیجه‌ای پیدا نشد.", [[btn("🔙 بازگشت", "main:back")]])
+    if not results: 
+        text = "❌ متاسفانه هیچ نتیجه‌ای پیدا نشد."
+        kb = [[btn("🔙 بازگشت", "main:back")]]
+        if message_id: return edit_message(chat_id, message_id, text, kb)
+        else: return send_message(chat_id, text, kb)
 
     page_items = results[(page_num - 1) * 5 : page_num * 5]
     lines = [f"🌐 **نتایج جستجو ({engine.upper()})**", f"🔍 **عبارت:** `{query}` | **صفحه:** {page_num}\n"]
@@ -218,13 +226,18 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     if nav_row: kb.append(nav_row)
     kb.append([btn("🔙 بازگشت به منوی اصلی", "main:back")])
     
-    edit_message(chat_id, message_id, "\n".join(lines), kb)
+    if message_id: edit_message(chat_id, message_id, "\n".join(lines), kb)
+    else: send_message(chat_id, "\n".join(lines), kb)
 
 def render_news_search(chat_id, message_id=None, page_num=1):
     s = SESSIONS.get(chat_id, {})
     results, query = s.get("results", []), s.get("query", "")
     
-    if not results: return edit_message(chat_id, message_id, "❌ هیچ خبری پیدا نشد.", [[btn("🔙 بازگشت", "main:back")]])
+    if not results: 
+        text = "❌ هیچ خبری پیدا نشد."
+        kb = [[btn("🔙 بازگشت", "main:back")]]
+        if message_id: return edit_message(chat_id, message_id, text, kb)
+        else: return send_message(chat_id, text, kb)
 
     page_items = results[(page_num - 1) * 5 : page_num * 5]
     lines = [f"📰 **اخبار مرتبط با:** `{query}`", f"📄 **صفحه:** {page_num}\n"]
@@ -242,14 +255,15 @@ def render_news_search(chat_id, message_id=None, page_num=1):
     if nav_row: kb.append(nav_row)
     kb.append([btn("🔙 بازگشت به منوی اصلی", "main:back")])
     
-    edit_message(chat_id, message_id, "\n".join(lines), kb)
+    if message_id: edit_message(chat_id, message_id, "\n".join(lines), kb)
+    else: send_message(chat_id, "\n".join(lines), kb)
 
 def render_image_carousel(chat_id, message_id=None, index=0):
     s = SESSIONS.get(chat_id, {})
     results, query = s.get("results", []), s.get("query", "")
     
     if not results: 
-        delete_message(chat_id, message_id)
+        if message_id: delete_message(chat_id, message_id)
         return send_message(chat_id, "❌ هیچ تصویری پیدا نشد.", [[btn("🔙 بازگشت به منو", "main:back")]])
 
     item = results[index]
@@ -295,11 +309,9 @@ def handle_message(msg):
     s = SESSIONS.get(chat_id, {})
     state = s.get("state")
 
-    # Admin Inputs
     if state == "WAITING_ADMIN_ADD":
         approve_user(text)
         send_message(chat_id, f"✅ کاربر `{text}` دسترسی عمومی پیدا کرد.")
-        send_message(text, "🎉 **دسترسی شما به ربات TahaSearcher فعال شد!**\nارسال کنید: /start")
         return send_admin_menu(chat_id)
     elif state == "WAITING_ADMIN_REV":
         revoke_user(text)
@@ -308,19 +320,21 @@ def handle_message(msg):
     elif state == "WAITING_ADMIN_ADD_GOOGLE":
         approve_google_user(text)
         send_message(chat_id, f"🎯 کاربر `{text}` مجوز موتور گوگل را دریافت کرد.")
-        send_message(text, "🎯 **مجوز استفاده از موتور گوگل برای شما فعال شد!**")
         return send_admin_menu(chat_id)
     elif state == "WAITING_ADMIN_REV_GOOGLE":
         revoke_google_user(text)
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
-    # Search Keyword Prompt Input
     if state == "WAITING_KEYWORD":
         engine = s.get("engine", "default")
         category = s.get("category", "web")
         
-        send_message(chat_id, f"⏳ در حال جستجوی عبارت `{text}` در موتور {engine.upper()}...")
+        # FIX: We now safely capture the Message ID of the hourglass!
+        loading_msg = send_message(chat_id, f"⏳ در حال جستجوی عبارت `{text}` در موتور {engine.upper()}...")
+        loading_id = None
+        if loading_msg and loading_msg.get("ok"):
+            loading_id = loading_msg.get("result", {}).get("message_id")
         
         log_history(user_id, engine, category, text)
         
@@ -329,9 +343,9 @@ def handle_message(msg):
         s["results"] = results
         s["state"] = "IDLE"
         
-        if category == "web": render_web_search(chat_id, None, 1)
-        elif category == "news": render_news_search(chat_id, None, 1)
-        elif category == "images": render_image_carousel(chat_id, None, 0)
+        if category == "web": render_web_search(chat_id, loading_id, 1)
+        elif category == "news": render_news_search(chat_id, loading_id, 1)
+        elif category == "images": render_image_carousel(chat_id, loading_id, 0)
         return
 
     send_main_menu(chat_id, user_id)
@@ -360,25 +374,20 @@ def handle_callback(cq):
         return send_main_menu(chat_id, user_id, message_id)
 
     elif kind == "req_google":
-        send_message(ADMIN_ID, f"📩 **درخواست جدید برای موتور گوگل!**\n\n👤 کاربر: `{user_id}`\nجهت تایید وارد `/admin` شوید.")
-        return edit_message(chat_id, message_id, "⏳ **درخواست شما برای مدیر ارسال شد.**")
+        send_message(ADMIN_ID, f"📩 **درخواست جدید برای گوگل!**\n👤 کاربر: `{user_id}`")
+        return edit_message(chat_id, message_id, "⏳ **درخواست شما ارسال شد.**")
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
         
         if sub_type == "help":
-            help_text = (
-                "❓ **راهنمای استفاده از TahaSearcher:**\n\n"
-                "1️⃣ **موتور پیش‌فرض (Default):** جستجوی کاملاً آزاد و رایگان در کل اینترنت (وب، عکس، خبر).\n\n"
-                "2️⃣ **موتور گوگل (Google Engine):** نتایج دقیق مستقیم از API رسمی گوگل. این موتور نیاز به تایید مدیر دارد.\n\n"
-                "💡 **روش کار:** ابتدا موتور و دسته‌بندی را انتخاب کنید، سپس کلمه کلیدی خود را بفرستید."
-            )
+            help_text = "❓ **راهنما:**\n۱. موتور پیش‌فرض رایگان است.\n۲. موتور گوگل نتایج رسمی می‌دهد اما نیاز به تایید مدیر دارد."
             return edit_message(chat_id, message_id, help_text, [[btn("🔙 بازگشت", "main:back")]])
             
         elif sub_type == "engine":
             if sub_val == "google" and not is_google_approved(user_id):
-                kb = [[btn("📩 ارسال درخواست مجوز به مدیر", "req_google")], [btn("🔙 بازگشت", "main:back")]]
-                return edit_message(chat_id, message_id, "🔒 **موتور گوگل نیاز به مجوز اختصاصی مدیر دارد.**\nآیا می‌خواهید درخواست مجوز ارسال کنید؟", kb)
+                kb = [[btn("📩 ارسال درخواست مجوز", "req_google")], [btn("🔙 بازگشت", "main:back")]]
+                return edit_message(chat_id, message_id, "🔒 **این بخش نیاز به تایید مدیر دارد.**", kb)
             
             s["engine"] = sub_val
             send_category_menu(chat_id, message_id, sub_val)
@@ -386,27 +395,26 @@ def handle_callback(cq):
         elif sub_type == "cat":
             s["category"] = sub_val
             s["state"] = "WAITING_KEYWORD"
-            edit_message(chat_id, message_id, f"⌨️ **دسته‌بندی `{sub_val.upper()}` انتخاب شد.**\n\nلطفاً کلمه یا عبارت کلیدی مورد نظر خود را ارسال کنید:")
+            edit_message(chat_id, message_id, f"⌨️ دسته‌بندی `{sub_val.upper()}` انتخاب شد.\n\nلطفاً کلمه کلیدی خود را بفرستید:")
 
     elif kind == "wpage": render_web_search(chat_id, message_id, int(value.partition(":")[2]))
     elif kind == "npage": render_news_search(chat_id, message_id, int(value.partition(":")[2]))
     elif kind == "ipage": render_image_carousel(chat_id, message_id, int(value.partition(":")[2]))
 
-    # Admin Callback Actions
     elif kind == "admin":
         if user_id != str(ADMIN_ID): return
         if value == "add":
             SESSIONS[chat_id] = {"state": "WAITING_ADMIN_ADD"}
-            edit_message(chat_id, message_id, "➕ آی‌دی عددی کاربر برای **دسترسی عمومی** را بفرستید:")
+            edit_message(chat_id, message_id, "➕ آی‌دی عددی برای **دسترسی عمومی**:")
         elif value == "rev":
             SESSIONS[chat_id] = {"state": "WAITING_ADMIN_REV"}
-            edit_message(chat_id, message_id, "➖ آی‌دی عددی کاربر برای **لغو دسترسی عمومی** را بفرستید:")
+            edit_message(chat_id, message_id, "➖ آی‌دی عددی برای **لغو دسترسی عمومی**:")
         elif value == "add_google":
             SESSIONS[chat_id] = {"state": "WAITING_ADMIN_ADD_GOOGLE"}
-            edit_message(chat_id, message_id, "🎯 آی‌دی عددی کاربر برای **مجوز گوگل** را بفرستید:")
+            edit_message(chat_id, message_id, "🎯 آی‌دی عددی برای **مجوز گوگل**:")
         elif value == "rev_google":
             SESSIONS[chat_id] = {"state": "WAITING_ADMIN_REV_GOOGLE"}
-            edit_message(chat_id, message_id, "🚫 آی‌دی عددی کاربر برای **لغو مجوز گوگل** را بفرستید:")
+            edit_message(chat_id, message_id, "🚫 آی‌دی عددی برای **لغو مجوز گوگل**:")
         elif value == "list":
             users = list(get_all_users())[:30]
             kb = []
@@ -415,9 +423,9 @@ def handle_callback(cq):
                 g_mark = "🎯" if is_google_approved(u) else "🌐"
                 label = f"{g_mark} {u_info.get('name')} (@{u_info.get('username')})" if u_info.get('username') else f"{g_mark} {u_info.get('name')}"
                 kb.append([btn(label, f"admin_u:{u}")])
-            kb.append([btn("🔙 بازگشت به پنل اصلی", "admin:back")])
+            kb.append([btn("🔙 بازگشت", "admin:back")])
             delete_message(chat_id, message_id)
-            send_message(chat_id, "👥 **لیست کاربران مجاز:**\n(علامت 🎯 به معنی داشتن مجوز گوگل است)\n\nروی کاربر کلیک کنید تا **تاریخچه دقیق جستجوها** را ببینید:", kb)
+            send_message(chat_id, "👥 **لیست کاربران:**\n(🎯 = دارای مجوز گوگل)\nروی کاربر کلیک کنید تا تاریخچه را ببینید:", kb)
         elif value == "back":
             delete_message(chat_id, message_id)
             send_admin_menu(chat_id)
@@ -427,16 +435,14 @@ def handle_callback(cq):
         target_user = value
         history_raw = db_cmd("LRANGE", f"shist:{target_user}", "0", "9")
         
-        lines = [f"🗂 **تاریخچه دقیق جستجوهای کاربر:** `{target_user}`\n"]
+        lines = [f"🗂 **تاریخچه کاربر:** `{target_user}`\n"]
         for i, h_str in enumerate(history_raw or []):
             try:
                 h = json.loads(h_str)
-                lines.append(f"{i+1}️⃣ **عبارت:** `{h.get('query')}`")
-                lines.append(f"⚙️ موتور: `{h.get('engine').upper()}` | دسته: `{h.get('category').upper()}`")
-                lines.append(f"🕒 زمان: `{h.get('time')}`\n")
+                lines.append(f"{i+1}️⃣ `{h.get('query')}` ({h.get('engine').upper()} - {h.get('category').upper()})")
             except: pass
             
-        kb = [[btn("🔙 بازگشت به لیست کاربران", "admin:list")]]
+        kb = [[btn("🔙 بازگشت", "admin:list")]]
         delete_message(chat_id, message_id)
         send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "هیچ تاریخچه‌ای ثبت نشده است.", kb)
 
@@ -448,9 +454,6 @@ def webhook():
         elif "message" in update: handle_message(update["message"])
     except Exception: pass
     return jsonify({"ok": True})
-
-@app.route("/")
-def health(): return "TahaSearcher Engine 2.0 Running!", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
