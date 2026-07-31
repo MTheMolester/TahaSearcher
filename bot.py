@@ -12,7 +12,6 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
-# Import the official Google Gemini SDK
 import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -73,13 +72,14 @@ def get_user_info(user_id):
         except: pass
     return {"name": str(user_id), "username": ""}
 
-def log_history(user_id, engine, category, query):
+# ── 🚨 ADVANCED OMNI-TRACKING LOGGING ──
+def log_action(user_id, action_type, details):
     ir_tz = timezone(timedelta(hours=3, minutes=30))
-    ir_time = datetime.now(ir_tz).strftime("%Y-%m-%d %H:%M")
+    ir_time = datetime.now(ir_tz).strftime("%Y-%m-%d %H:%M:%S")
     
-    entry = {"engine": engine, "category": category, "query": query, "time": ir_time}
+    entry = {"time": ir_time, "action": action_type, "details": details}
     db_cmd("LPUSH", f"shist:{user_id}", json.dumps(entry, ensure_ascii=False))
-    db_cmd("LTRIM", f"shist:{user_id}", "0", "19") 
+    db_cmd("LTRIM", f"shist:{user_id}", "0", "199") # Keeps the last 200 actions precisely recorded
 
 # ── Bale API Helpers ────────────────────────────────────────────────────────
 def api_call(method, payload):
@@ -372,10 +372,10 @@ def send_admin_menu(chat_id, message_id=None):
     kb = [
         [btn("➕ افزودن دسترسی عمومی", "admin:add"), btn("➖ لغو دسترسی عمومی", "admin:rev")],
         [btn("🎯 افزودن دسترسی گوگل", "admin:add_google"), btn("🚫 لغو دسترسی گوگل", "admin:rev_google")],
-        [btn("👥 لیست کاربران و تاریخچه دقیق", "admin:list")],
+        [btn("👥 لیست کاربران و نظارت دقیق", "admin:list")],
         [btn("🔙 خروج", "main:back")]
     ]
-    text = "👑 **پنل مدیریت TahaSearcher**\nسطح دسترسی کاربران و تاریخچه دقیق فعالیت‌ها:"
+    text = "👑 **پنل مدیریت پیشرفته TahaSearcher**\n\nمدیریت دسترسی‌ها و بررسی فعالیت کاربران:"
     if message_id: edit_message(chat_id, message_id, text, kb)
     else: send_message(chat_id, text, kb)
 
@@ -394,7 +394,7 @@ def handle_message(msg):
 
     if text in ("/start", "/help"): return send_main_menu(chat_id, user_id)
 
-    s = SESSIONS.setdefault(chat_id, {})
+    s = SESSIONS.get(chat_id, {})
     state = s.get("state")
 
     if state == "WAITING_ADMIN_ADD":
@@ -414,22 +414,20 @@ def handle_message(msg):
         send_message(chat_id, f"🚫 دسترسی گوگل کاربر `{text}` لغو شد.")
         return send_admin_menu(chat_id)
 
-    # ── Bulletproof AI Engine Logic (Auto-Fallback) ──
+    # ── AI Engine Logic ──
     if state == "WAITING_AI_PROMPT":
-        loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال پردازش (ارزیابی مدل‌ها)...")
+        loading_msg = send_message(chat_id, "⏳ هوش مصنوعی در حال پردازش...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
-        log_history(user_id, "ai", "chat", text[:50] + "...")
+        # OMNI-TRACKER: Log AI usage specifically
+        log_action(user_id, "🧠 AI CHAT", f"Prompt: {text[:80]}...")
         
         try:
             if not GEMINI_API_KEY:
-                raise Exception("GEMINI_API_KEY is not set in Render environment variables.")
+                raise Exception("GEMINI_API_KEY is not set.")
                 
-            # If the list of available models hasn't been fetched yet, pull it directly from Google
             if "gemini_models" not in s:
-                raw_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                # Filter out known problematic aliases if needed, otherwise keep all
-                s["gemini_models"] = raw_models
+                s["gemini_models"] = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 
             if not s["gemini_models"]:
                 raise Exception("هیچ مدلی برای کلید API شما یافت نشد.")
@@ -437,42 +435,40 @@ def handle_message(msg):
             ai_response = None
             last_err = ""
             
-            # Iterate and brute-force through the list until a model successfully responds
             for model_name in list(s["gemini_models"]):
                 try:
                     temp_model = genai.GenerativeModel(model_name)
                     response = temp_model.generate_content(text)
                     ai_response = response.text
-                    break # SUCCESS! Exit the loop immediately.
+                    break
                 except Exception as e:
-                    logging.warning(f"Model {model_name} failed with error: {e}")
-                    # Remove the broken model from the list so we don't try it again next time
+                    logging.warning(f"Model {model_name} failed: {e}")
                     if model_name in s["gemini_models"]:
                         s["gemini_models"].remove(model_name)
                     last_err = str(e)
-                    continue # Try the next model
+                    continue
                     
             if not ai_response:
-                # If the loop finishes and we STILL have no response, the API is entirely down for this key
-                raise Exception(f"تمامی مدل‌های در دسترس خطای 404 یا محدودیت دادند. آخرین خطا: {last_err}")
+                raise Exception(f"All models failed. Last error: {last_err}")
                 
         except Exception as e:
             logging.error(f"AI Error: {e}")
-            ai_response = f"❌ متاسفانه خطایی در ارتباط با سرور گوگل رخ داد.\n\nجزئیات فنی: `{e}`"
+            ai_response = f"❌ خطای سرور:\n`{e}`"
             
         if loading_id: delete_message(chat_id, loading_id)
         
-        kb = [[btn("🔙 پایان چت و بازگشت به منو", "main:back")]]
-        return send_message(chat_id, f"🤖 **پاسخ هوش مصنوعی:**\n\n{ai_response}", kb)
+        kb = [[btn("🔙 پایان چت", "main:back")]]
+        return send_message(chat_id, f"🤖 **پاسخ:**\n\n{ai_response}", kb)
 
     if state == "WAITING_KEYWORD":
         engine = s.get("engine", "default")
         category = s.get("category", "web")
         
-        loading_msg = send_message(chat_id, f"⏳ در حال جستجوی عبارت `{text}` در موتور {engine.upper()}...")
+        loading_msg = send_message(chat_id, f"⏳ در حال جستجو...")
         loading_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
-        log_history(user_id, engine, category, text)
+        # OMNI-TRACKER: Log searches with exact engine/category data
+        log_action(user_id, f"🔍 {engine.upper()} SEARCH ({category})", f"Query: {text}")
         
         results = fetch_search_results(text, engine, category)
         s["query"] = text
@@ -507,12 +503,9 @@ def handle_callback(cq):
     kind, _, value = data.partition(":")
 
     if kind == "main":
-        if value == "back":
-            return send_main_menu(chat_id, user_id, message_id)
-        elif value == "search_menu":
-            return send_search_menu(chat_id, user_id, message_id)
-        elif value == "ai_menu":
-            return send_ai_menu(chat_id, message_id)
+        if value == "back": return send_main_menu(chat_id, user_id, message_id)
+        elif value == "search_menu": return send_search_menu(chat_id, user_id, message_id)
+        elif value == "ai_menu": return send_ai_menu(chat_id, message_id)
 
     elif kind == "req_google":
         send_message(ADMIN_ID, f"📩 **درخواست جدید برای گوگل!**\n👤 کاربر: `{user_id}`")
@@ -525,52 +518,50 @@ def handle_callback(cq):
         
         target_url = results[idx].get("href", results[idx].get("url", ""))
         
-        loading_msg = send_message(chat_id, "⏳ در حال استخراج و ساخت فایل متنی...")
+        loading_msg = send_message(chat_id, "⏳ در حال استخراج فایل متنی...")
         load_msg_id = loading_msg.get("result", {}).get("message_id") if loading_msg else None
         
         text_content, doc_title = extract_article_text(target_url)
         
         if not text_content:
             if load_msg_id: delete_message(chat_id, load_msg_id)
-            return send_message(chat_id, "❌ متاسفانه سیستم امنیتی این سایت، اجازه استخراج متن را نمی‌دهد یا محتوای متنی ندارد.")
+            return send_message(chat_id, "❌ امکان استخراج متن این صفحه وجود ندارد.")
             
         safe_title = "".join(c for c in doc_title if c.isalnum() or c in " _-").strip() or "Article"
         filename = f"{safe_title[:40]}.txt"
         
+        # OMNI-TRACKER: Log the exact file they ripped from the internet
+        log_action(user_id, "📥 FILE DOWNLOAD", f"Title: {safe_title} | URL: {target_url}")
+        
         file_stream = io.BytesIO(text_content.encode('utf-8'))
         file_stream.seek(0)
         
-        ok = send_document(chat_id, file_stream, filename, f"📥 **متن استخراج شده مقاله:**\n{doc_title}")
+        ok = send_document(chat_id, file_stream, filename, f"📥 **مقاله:**\n{doc_title}")
         
         if load_msg_id: delete_message(chat_id, load_msg_id)
-        if not ok: send_message(chat_id, "❌ خطایی در ارسال فایل متنی به پیام‌رسان بله رخ داد.")
+        if not ok: send_message(chat_id, "❌ خطایی در ارسال فایل رخ داد.")
 
     elif kind == "ai":
         if value == "chat":
             s["state"] = "WAITING_AI_PROMPT"
-            text = "🤖 **حالت چت با هوش مصنوعی (Gemini) فعال شد!**\n\nلطفاً سوال یا درخواست خود را تایپ کنید:\n*(برای خروج، از دکمه زیر یا دستور /start استفاده کنید)*"
-            kb = [[btn("🔙 لغو و بازگشت به منوی اصلی", "main:back")]]
+            text = "🤖 **حالت چت فعال شد!**\n\nلطفاً سوال خود را بپرسید:"
+            kb = [[btn("🔙 لغو", "main:back")]]
             return edit_message(chat_id, message_id, text, kb)
 
     elif kind == "menu":
         sub_type, _, sub_val = value.partition(":")
-        
         if sub_type == "help":
-            help_text = "❓ **راهنما:**\n۱. موتور پیش‌فرض رایگان است.\n۲. موتور گوگل نتایج رسمی می‌دهد اما نیاز به تایید مدیر دارد."
-            return edit_message(chat_id, message_id, help_text, [[btn("🔙 بازگشت", "main:back")]])
-            
+            return edit_message(chat_id, message_id, "❓ راهنما", [[btn("🔙", "main:back")]])
         elif sub_type == "engine":
             if sub_val == "google" and not is_google_approved(user_id):
-                kb = [[btn("📩 ارسال درخواست مجوز", "req_google")], [btn("🔙 بازگشت", "main:search_menu")]]
-                return edit_message(chat_id, message_id, "🔒 **این بخش نیاز به تایید مدیر دارد.**", kb)
-            
+                kb = [[btn("📩 ارسال درخواست", "req_google")], [btn("🔙", "main:search_menu")]]
+                return edit_message(chat_id, message_id, "🔒 **نیاز به تایید مدیر**", kb)
             s["engine"] = sub_val
             send_category_menu(chat_id, message_id, sub_val)
-            
         elif sub_type == "cat":
             s["category"] = sub_val
             s["state"] = "WAITING_KEYWORD"
-            edit_message(chat_id, message_id, f"⌨️ دسته‌بندی `{sub_val.upper()}` انتخاب شد.\n\nلطفاً کلمه کلیدی خود را بفرستید:")
+            edit_message(chat_id, message_id, f"⌨️ کلمه کلیدی برای `{sub_val.upper()}` را بفرستید:")
 
     elif kind == "wpage": render_web_search(chat_id, message_id, int(value.partition(":")[2]))
     elif kind == "npage": render_news_search(chat_id, message_id, int(value.partition(":")[2]))
@@ -600,7 +591,7 @@ def handle_callback(cq):
                 kb.append([btn(label, f"admin_u:{u}")])
             kb.append([btn("🔙 بازگشت", "admin:back")])
             delete_message(chat_id, message_id)
-            send_message(chat_id, "👥 **لیست کاربران:**\n(🎯 = دارای مجوز گوگل)\nروی کاربر کلیک کنید تا تاریخچه را ببینید:", kb)
+            send_message(chat_id, "👥 **لیست کاربران:**\n(برای مشاهده ریزِ لاگ‌ها، کاربر را انتخاب کنید)", kb)
         elif value == "back":
             delete_message(chat_id, message_id)
             send_admin_menu(chat_id)
@@ -608,18 +599,60 @@ def handle_callback(cq):
     elif kind == "admin_u":
         if user_id != str(ADMIN_ID): return
         target_user = value
+        
+        # Display the 10 most recent logs inline
         history_raw = db_cmd("LRANGE", f"shist:{target_user}", "0", "9")
         
-        lines = [f"🗂 **تاریخچه کاربر:** `{target_user}`\n"]
+        lines = [f"🗂 **پیش‌نمایش تاریخچه کاربر:** `{target_user}`\n"]
         for i, h_str in enumerate(history_raw or []):
             try:
                 h = json.loads(h_str)
-                lines.append(f"{i+1}️⃣ `{h.get('query')}` ({h.get('engine').upper()} - {h.get('category').upper()})")
+                lines.append(f"{i+1}️⃣ `{h.get('action')}`\n└ 📝 {h.get('details')}\n└ 🕒 {h.get('time')}\n")
             except: pass
             
-        kb = [[btn("🔙 بازگشت", "admin:list")]]
+        # The new Forensic Download Button
+        kb = [
+            [btn("📥 دانلود کل لاگ (Full Download)", f"admin_log:{target_user}")],
+            [btn("🔙 بازگشت به لیست", "admin:list")]
+        ]
         delete_message(chat_id, message_id)
-        send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "هیچ تاریخچه‌ای ثبت نشده است.", kb)
+        send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "هیچ فعالیتی ثبت نشده است.", kb)
+
+    # ── ADVANCED LOG EXPORTER TRIGGER ──
+    elif kind == "admin_log":
+        if user_id != str(ADMIN_ID): return
+        target_user = value
+        
+        # Fetch up to 200 items from the database
+        history_raw = db_cmd("LRANGE", f"shist:{target_user}", "0", "-1")
+        if not history_raw:
+            return answer_callback(cq["id"], "❌ لاگی برای این کاربر وجود ندارد.", show_alert=True)
+            
+        u_info = get_user_info(target_user)
+        report_lines = [
+            f"=== TAHA SEARCHER FORENSIC LOG ===",
+            f"User ID: {target_user}",
+            f"Name: {u_info.get('name')}",
+            f"Username: {u_info.get('username')}",
+            f"Total Records Extracted: {len(history_raw)}",
+            f"Generated On: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n",
+            f"=================================================\n"
+        ]
+        
+        for h_str in history_raw:
+            try:
+                h = json.loads(h_str)
+                report_lines.append(f"[{h.get('time')}] | {h.get('action')} | DETAILS: {h.get('details')}")
+            except: pass
+            
+        report_text = "\n".join(report_lines)
+        file_stream = io.BytesIO(report_text.encode('utf-8'))
+        file_stream.seek(0)
+        
+        filename = f"SystemLog_{target_user}.txt"
+        
+        answer_callback(cq["id"], "در حال تولید فایل...")
+        send_document(chat_id, file_stream, filename, f"📁 **فایل گزارش کامل فعالیت کاربر:** `{target_user}`")
 
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook():
