@@ -12,7 +12,6 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "tahasearcher-secret")
 BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 app = Flask(__name__)
 
-# Temporary in-memory cache for blazing-fast page scrolling
 SESSIONS = {}
 
 # ── Bale API Helpers ────────────────────────────────────────────────────────
@@ -38,7 +37,39 @@ def answer_callback(callback_query_id):
 def btn(text, data): return {"text": text, "callback_data": data}
 def url_btn(text, url): return {"text": text, "url": url}
 
-# ── 🌐 The TahaSearcher Engine ──────────────────────────────────────────────
+# ── 🌐 The Unbreakable Dual-Engine Search ──────────────────────────────────
+def fetch_search_results(query):
+    results = []
+    
+    # Engine 1: DuckDuckGo
+    try:
+        with DDGS() as ddgs:
+            raw_results = list(ddgs.text(query, max_results=30))
+            if raw_results:
+                return raw_results
+    except Exception as e:
+        logging.warning(f"DuckDuckGo failed/blocked: {e}")
+
+    # Engine 2: SearxNG Fallback (If DDG blocks the Render IP)
+    try:
+        logging.info("Attempting fallback to SearxNG...")
+        url = "https://searx.be/search"
+        params = {"q": query, "format": "json"}
+        r = requests.get(url, params=params, timeout=10)
+        if r.ok:
+            data = r.json()
+            for item in data.get("results", [])[:30]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "body": item.get("content", "")[:120],
+                    "href": item.get("url", "")
+                })
+            return results
+    except Exception as e:
+        logging.error(f"SearxNG fallback failed: {e}")
+        
+    return results
+
 def render_web_search(chat_id, message_id=None, page_num=1):
     results = SESSIONS.get(chat_id, {}).get("web_results", [])
     query = SESSIONS.get(chat_id, {}).get("search_query", "")
@@ -48,7 +79,6 @@ def render_web_search(chat_id, message_id=None, page_num=1):
         if message_id: return edit_message(chat_id, message_id, text)
         else: return send_message(chat_id, text)
 
-    # Calculate pagination index
     start_idx = (page_num - 1) * 5
     end_idx = start_idx + 5
     page_items = results[start_idx:end_idx]
@@ -59,7 +89,6 @@ def render_web_search(chat_id, message_id=None, page_num=1):
     kb = []
     row_links = []
     
-    # Build the list of results
     for i, item in enumerate(page_items):
         title = item.get("title", "بدون عنوان")[:50]
         snippet = item.get("body", "")[:120] + "..."
@@ -68,13 +97,11 @@ def render_web_search(chat_id, message_id=None, page_num=1):
         lines.append(f"{numbers[i]} **{title}**")
         lines.append(f"📝 {snippet}\n")
         
-        # Attach the actual URL to the numbered buttons
         row_links.append(url_btn(str(i+1), link))
         
     kb.append(row_links)
     nav_row = []
     
-    # Generate infinite pagination tokens
     if end_idx < len(results): nav_row.append(btn("⬅️ بعدی", f"wpage:next:{page_num+1}"))
     if page_num > 1: nav_row.append(btn("➡️ قبلی", f"wpage:prev:{page_num-1}"))
         
@@ -100,19 +127,16 @@ def handle_message(msg):
         send_message(chat_id, welcome_text)
         return
 
-    # Trigger the search engine
     send_message(chat_id, "⏳ در حال جستجو در وب...")
     SESSIONS.setdefault(chat_id, {})["search_query"] = text
     
     try:
-        # We use a context manager to ensure proper resource management when scraping 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(text, max_results=30))
-            
+        # Trigger the new unbreakable search function
+        results = fetch_search_results(text)
         SESSIONS[chat_id]["web_results"] = results
         render_web_search(chat_id, None, page_num=1)
     except Exception as e:
-        logging.error(f"Search Error: {e}")
+        logging.error(f"Critical Search Error: {e}")
         send_message(chat_id, "❌ خطایی در ارتباط با سرور جستجو رخ داد. لطفاً چند لحظه دیگر تلاش کنید.")
 
 def handle_callback(cq):
